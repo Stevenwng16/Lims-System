@@ -63,6 +63,27 @@ const DECIMAL_PATTERN = /^\d+(\.\d+)?$/;
 const SAMPLE_TYPE_IDS = (orgId: string) =>
   new Set(getOrgSettings(orgId).sampleTypes.filter((t) => t.active).map((t) => t.id));
 
+// Per-sample rules (AC 14) against the job's lab — shared by create, update
+// and add (US-C3 AC 7), so a single new sample is never gated on stale
+// whole-job header state (audit findings 2/4).
+function validateSample(orgId: string, labId: string, s: SampleInput): string | null {
+  const activeMethods = activeMethodIdsForLab(orgId, labId);
+  if (!SAMPLE_TYPE_IDS(orgId).has(s.typeId)) return "Each sample needs a valid sample type.";
+  if (!s.description.trim()) return "Each sample needs a description.";
+  if (s.quantity && !DECIMAL_PATTERN.test(s.quantity)) {
+    return "Sample quantity must be a plain decimal number with a point (e.g. 1.5).";
+  }
+  for (const id of s.requestedMethodIds) {
+    if (!activeMethods.has(id)) {
+      return "Each sample's requested methods must be active methods of the job's lab.";
+    }
+  }
+  if (s.condition === "deviation" && s.deviationType === "none") {
+    return "A deviation must have a type (cosmetic, or does-not-match-description).";
+  }
+  return null;
+}
+
 function validate(actor: JobActor, input: JobInput, existing?: MockJob): string | null {
   const lab = mockDb.labs.get(input.labId);
   if (!lab || lab.orgId !== actor.orgId) return "Choose the lab this job belongs to.";
@@ -79,21 +100,9 @@ function validate(actor: JobActor, input: JobInput, existing?: MockJob): string 
     if (!activeMethods.has(id)) return "Requested methods must be active methods of the job's lab.";
   }
 
-  const validTypes = SAMPLE_TYPE_IDS(actor.orgId);
   for (const s of input.samples) {
-    if (!validTypes.has(s.typeId)) return "Each sample needs a valid sample type.";
-    if (!s.description.trim()) return "Each sample needs a description.";
-    if (s.quantity && !DECIMAL_PATTERN.test(s.quantity)) {
-      return "Sample quantity must be a plain decimal number with a point (e.g. 1.5).";
-    }
-    for (const id of s.requestedMethodIds) {
-      if (!activeMethods.has(id)) {
-        return "Each sample's requested methods must be active methods of the job's lab.";
-      }
-    }
-    if (s.condition === "deviation" && s.deviationType === "none") {
-      return "A deviation must have a type (cosmetic, or does-not-match-description).";
-    }
+    const error = validateSample(actor.orgId, input.labId, s);
+    if (error) return error;
   }
   return null;
 }
@@ -135,7 +144,20 @@ function toListItem(job: MockJob): JobListItem {
   };
 }
 
-// US-C2 AC 7: status from active (accepted, non-voided) samples.
+// US-C2 AC 7: status from active (accepted, non-voided) samples. Exported so
+// the overview and the job-detail header (US-C3 AC 12) share one rule.
+export function deriveJobStatus(job: MockJob): JobStatus {
+  return deriveStatus(job);
+}
+
+/** US-C2 AC 8 / US-C3 AC 2: overdue if the deadline has passed or is within
+ * 24h and the job is not completed/voided. */
+export function isJobOverdue(job: MockJob): boolean {
+  if (job.voided || deriveStatus(job) === "completed" || !job.dueDate) return false;
+  const dueTime = new Date(job.dueDate).getTime();
+  return !Number.isNaN(dueTime) && dueTime <= Date.now() + 24 * 3600_000;
+}
+
 function deriveStatus(job: MockJob): JobStatus {
   if (job.voided) return "closed";
   const live = job.samples.filter((s) => !s.voided);
@@ -362,6 +384,19 @@ export const mockJobApi: JobApi = {
       recordedBy: actor.email,
       recordedAt: new Date().toLocaleDateString("en-GB", { day: "numeric", month: "short", year: "numeric" }),
     };
+    return { status: "success", jobId };
+  },
+
+  async addSample(actor, jobId, input): Promise<JobActionResult> {
+    const loaded = loadJobForWrite(actor, jobId);
+    if ("error" in loaded) return { status: "error", message: loaded.error };
+    const { job } = loaded;
+    // Validate ONLY the new sample against the job's (fixed) lab — never
+    // re-check the job's own header/lab state, which may have changed since
+    // registration (audit findings 2/4).
+    const error = validateSample(actor.orgId, job.labId, input);
+    if (error) return { status: "error", message: error };
+    job.samples.push(buildSample(actor.orgId, job.labId, job.id, job.receivedAt, input));
     return { status: "success", jobId };
   },
 

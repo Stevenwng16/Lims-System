@@ -1,7 +1,8 @@
 import { notFound } from "next/navigation";
-import { jobApi } from "@/lib/jobs";
+import { deriveJobStatus, isJobOverdue, jobApi } from "@/lib/jobs";
+import { labApi } from "@/lib/labs";
 import { methodApi } from "@/lib/methods";
-import { getOrgSettings } from "@/lib/mock-db";
+import { getOrgSettings, type MockJob } from "@/lib/mock-db";
 import {
   Breadcrumb,
   BreadcrumbItem,
@@ -11,9 +12,48 @@ import {
   BreadcrumbSeparator,
 } from "@/components/ui/breadcrumb";
 import { resolveJobActor } from "../actions";
-import { JobDetail } from "./job-detail-client";
+import { JobDetail, type HistoryEvent } from "./job-detail-client";
 
 export const metadata = { title: "Job — LIMS" };
+
+// AC 11: the History tab is a VIEW on the append-only audit log, filtered to
+// this job. No audit log exists yet (a backend obligation), so the mock
+// reconstructs illustrative events from the current record — clearly labelled
+// as such in the UI. Real, timestamped history arrives with the audit log.
+function reconstructHistory(job: MockJob): HistoryEvent[] {
+  const events: HistoryEvent[] = [];
+  events.push({
+    when: job.createdAt,
+    who: job.createdBy,
+    action: `Job created, ${job.samples.length} sample(s) registered`,
+  });
+  for (const s of job.samples) {
+    if (s.consultation) {
+      events.push({
+        when: s.consultation.recordedAt,
+        who: s.consultation.recordedBy,
+        action: `Customer consultation recorded for ${s.id} (${s.consultation.who})`,
+      });
+    }
+    if (s.acceptance) {
+      const label =
+        s.acceptance === "accepted-with-reservation"
+          ? `accepted with reservation${s.reservationReason ? ` — ${s.reservationReason}` : ""}`
+          : s.acceptance;
+      events.push({ when: s.createdAt, who: job.createdBy, action: `Sample ${s.id} ${label}` });
+    }
+    for (const a of s.attachments) {
+      events.push({ when: a.uploadedAt, who: a.uploadedBy, action: `Evidence added to ${s.id}: ${a.fileName}` });
+    }
+    if (s.voided) {
+      events.push({ when: "—", who: "—", action: `Sample ${s.id} voided${s.voidReason ? ` — ${s.voidReason}` : ""}` });
+    }
+  }
+  if (job.voided) {
+    events.push({ when: "—", who: "—", action: `Job voided${job.voidReason ? ` — ${job.voidReason}` : ""}` });
+  }
+  return events;
+}
 
 export default async function JobDetailPage({ params }: { params: Promise<{ id: string }> }) {
   const { id } = await params;
@@ -25,13 +65,22 @@ export default async function JobDetailPage({ params }: { params: Promise<{ id: 
   const typeNames: Record<string, string> = {};
   for (const t of settings.sampleTypes) typeNames[t.id] = t.name;
   const methodNames: Record<string, string> = {};
-  for (const m of await methodApi.listMethods(actor)) methodNames[m.id] = `${m.name} (${m.code})`;
+  const allMethods = await methodApi.listMethods(actor);
+  for (const m of allMethods) methodNames[m.id] = `${m.name} (${m.code})`;
 
   // A lab manager can only SEE jobs in their own labs (getJob enforces this),
-  // so seeing + being a manager ⇒ may manage. The server actions re-check
+  // so seeing + being a manager ⇒ may manage. Server actions re-check
   // (invariant 4). A read-only support session cannot manage.
   const canManage =
     (actor.role === "admin" || actor.role === "lab-manager") && !job.voided;
+
+  // Options for the Add-sample dialog (AC 7): active types + active methods of
+  // the job's lab.
+  const sampleTypes = settings.sampleTypes.filter((t) => t.active).map((t) => ({ id: t.id, name: t.name }));
+  const labMethods = allMethods
+    .filter((m) => m.status === "active" && m.labId === job.labId)
+    .map((m) => ({ id: m.id, label: `${m.name} (${m.code})` }));
+  const labName = (await labApi.listLabs(actor.orgId)).find((l) => l.id === job.labId)?.name ?? job.labId;
 
   return (
     <div className="mx-auto max-w-3xl space-y-6">
@@ -50,9 +99,15 @@ export default async function JobDetailPage({ params }: { params: Promise<{ id: 
       <JobDetail
         job={job}
         jobLabel={settings.jobLabel}
+        labName={labName}
         typeNames={typeNames}
         methodNames={methodNames}
         canManage={canManage}
+        status={deriveJobStatus(job)}
+        overdue={isJobOverdue(job)}
+        history={reconstructHistory(job)}
+        sampleTypes={sampleTypes}
+        labMethods={labMethods}
       />
     </div>
   );

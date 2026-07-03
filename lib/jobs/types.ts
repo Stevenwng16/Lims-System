@@ -102,6 +102,9 @@ export interface JobApi {
     sampleId: string,
     consultation: { who: string; when: string; outcome: string },
   ): Promise<JobActionResult>;
+  /** US-C3 AC 7: add one sample to an existing job (new immutable ID); the
+   * acceptance decision is recorded afterwards, as at registration. */
+  addSample(actor: JobActor, jobId: string, sample: SampleInput): Promise<JobActionResult>;
   /** AC 6: optional deviation evidence via the central attachment facility (ADR-3). */
   addSampleAttachment(
     actor: JobActor,

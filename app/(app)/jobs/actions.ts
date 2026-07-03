@@ -117,6 +117,31 @@ export async function recordConsultationAction(
   return { success: true };
 }
 
+export async function addSampleAction(
+  _prev: JobFormState,
+  formData: FormData,
+): Promise<JobFormState> {
+  const actor = await resolveJobActor();
+  const jobId = String(formData.get("jobId") ?? "");
+  const condition = formData.get("condition") === "deviation" ? "deviation" : "conforming";
+  const sample: SampleInput = {
+    typeId: String(formData.get("typeId") ?? ""),
+    description: String(formData.get("description") ?? ""),
+    customerSampleRef: String(formData.get("customerSampleRef") ?? ""),
+    quantity: String(formData.get("quantity") ?? ""),
+    quantityUnit: String(formData.get("quantityUnit") ?? ""),
+    requestedMethodIds: formData.getAll("requestedMethodIds").map(String),
+    condition,
+    deviationType: (String(formData.get("deviationType") ?? "none") as SampleInput["deviationType"]),
+    deviationNote: String(formData.get("deviationNote") ?? ""),
+    storageLocation: String(formData.get("storageLocation") ?? ""),
+  };
+  const result = await jobApi.addSample(actor, jobId, sample);
+  if (result.status === "error") return { error: result.message };
+  revalidatePath(`/jobs/${jobId}`);
+  return { success: true };
+}
+
 export async function addSampleAttachmentAction(
   _prev: JobFormState,
   formData: FormData,
