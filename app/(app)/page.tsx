@@ -59,7 +59,7 @@ export default async function HomePage() {
                 Roles &amp; permissions
               </Link>
               {" · "}
-              <Link href="/settings/support-access" className="underline-offset-4 hover:underline">
+              <Link href="/settings" className="underline-offset-4 hover:underline">
                 Settings
               </Link>
             </>

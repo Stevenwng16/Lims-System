@@ -1,4 +1,4 @@
-import { mockDb, type MockOrganisation } from "@/lib/mock-db";
+import { defaultOrgSettings, mockDb, type MockOrganisation } from "@/lib/mock-db";
 import type { ActionResult, PlatformApi } from "./types";
 
 function grantIsActive(org: MockOrganisation): boolean {
@@ -36,6 +36,8 @@ export const mockPlatformApi: PlatformApi = {
       setupPending: true, // until the invited admin completes setup (AC 4)
       supportGrant: null,
     });
+    // US-A2 AC 5 / US-A7 AC 1: settings seeded with safe defaults.
+    mockDb.orgSettings.set(id, defaultOrgSettings());
     // US-A5 AC 8: one default lab is seeded so the organisation is immediately
     // usable and the last-active-lab rule holds from day one.
     mockDb.labs.set(`lab-${id}-main`, {
@@ -48,6 +50,8 @@ export const mockPlatformApi: PlatformApi = {
       methodCount: 0,
       equipmentCount: 0,
       hasActiveWork: false,
+      analystsMayCreateBatches: false,
+      reviewerMustDiffer: false,
     });
     console.log(`[mock platform] setup invitation sent to ${adminEmail} for "${trimmed}" (AC 4/5: seeded defaults applied)`);
     return { status: "success" };

@@ -1,4 +1,4 @@
-import type { SessionUser } from "./auth/types";
+﻿import type { SessionUser } from "./auth/types";
 
 // Single in-memory store behind all mock APIs (auth + platform), so state is
 // consistent across flows (e.g. suspending an org blocks its users' logins).
@@ -38,7 +38,75 @@ export type MockLab = {
   methodCount: number;
   equipmentCount: number;
   hasActiveWork: boolean; // blocks deactivation (US-A5 AC 5)
+  // Per-lab workflow settings (US-A7 AC 6) — enforced via US-A4/US-D6.
+  analystsMayCreateBatches: boolean;
+  reviewerMustDiffer: boolean;
 };
+
+// Organisation-wide settings (US-A7). Seeded with these safe defaults at
+// provisioning (US-A2 AC 5) so a fresh organisation works untouched.
+export type ListItem = { id: string; name: string; active: boolean };
+
+export type OrgSettings = {
+  security: {
+    minPasswordLength: number;
+    requireComplexity: boolean;
+    lockoutThreshold: number;
+    sessionTimeoutMinutes: number;
+    requireMfa: boolean;
+  };
+  identifiers: {
+    jobFormat: string;
+    sampleFormat: string;
+    batchFormat: string;
+    sequenceReset: "never" | "yearly" | "monthly";
+  };
+  jobLabel: string;
+  sampleTypes: ListItem[];
+  resultQualifiers: ListItem[];
+  barcode: {
+    symbology: "code128" | "qr";
+    widthMm: number;
+    heightMm: number;
+    // The human-readable sample ID can never be switched off (AC 9b).
+    showJobNumber: boolean;
+    showClient: boolean;
+    showDate: boolean;
+  };
+};
+
+export function defaultOrgSettings(): OrgSettings {
+  return {
+    security: {
+      minPasswordLength: 12,
+      requireComplexity: true,
+      lockoutThreshold: 5,
+      sessionTimeoutMinutes: 30,
+      requireMfa: false,
+    },
+    identifiers: {
+      jobFormat: "{LAB}{YY}-{SEQ:00000}",
+      sampleFormat: "{JOB}.{SEQ:000}",
+      batchFormat: "{LAB}B{YY}-{SEQ:0000}",
+      sequenceReset: "yearly",
+    },
+    jobLabel: "Job",
+    sampleTypes: [
+      { id: "st-1", name: "Water", active: true },
+      { id: "st-2", name: "Soil", active: true },
+      { id: "st-3", name: "Sludge", active: true },
+    ],
+    resultQualifiers: [{ id: "rq-1", name: "n.b.", active: true }],
+    barcode: {
+      symbology: "code128",
+      widthMm: 50,
+      heightMm: 25,
+      showJobNumber: true,
+      showClient: false,
+      showDate: true,
+    },
+  };
+}
 
 // NOTE (US-A6 AC 13): the real data model must separate *identity* (email +
 // credentials) from *organisation membership* (role, labs, clearances). The
@@ -68,6 +136,7 @@ export type MockDb = {
   organisations: Map<string, MockOrganisation>;
   users: Map<string, MockUser>;
   labs: Map<string, MockLab>;
+  orgSettings: Map<string, OrgSettings>;
 };
 
 export const DEMO_PASSWORD = "LabDemo2026!!";
@@ -198,6 +267,8 @@ function seedDb(): MockDb {
     methodCount: 8,
     equipmentCount: 15,
     hasActiveWork: true, // demo: deactivation is blocked (AC 5)
+    analystsMayCreateBatches: false,
+    reviewerMustDiffer: false,
   });
   labs.set("lab-wat", {
     id: "lab-wat",
@@ -209,6 +280,8 @@ function seedDb(): MockDb {
     methodCount: 4,
     equipmentCount: 9,
     hasActiveWork: false, // demo: can be deactivated (and reactivated)
+    analystsMayCreateBatches: false,
+    reviewerMustDiffer: false,
   });
   labs.set("lab-ext", {
     id: "lab-ext",
@@ -220,6 +293,8 @@ function seedDb(): MockDb {
     methodCount: 2,
     equipmentCount: 4,
     hasActiveWork: false,
+    analystsMayCreateBatches: false,
+    reviewerMustDiffer: false,
   });
   // Seeded default labs of the other organisations (US-A5 AC 8).
   labs.set("lab-alpha-main", {
@@ -232,6 +307,8 @@ function seedDb(): MockDb {
     methodCount: 3,
     equipmentCount: 6,
     hasActiveWork: false,
+    analystsMayCreateBatches: false,
+    reviewerMustDiffer: false,
   });
   labs.set("lab-oldcust-main", {
     id: "lab-oldcust-main",
@@ -243,13 +320,29 @@ function seedDb(): MockDb {
     methodCount: 1,
     equipmentCount: 2,
     hasActiveWork: false,
+    analystsMayCreateBatches: false,
+    reviewerMustDiffer: false,
   });
 
-  return { organisations, users, labs };
+  const orgSettings = new Map<string, OrgSettings>();
+  for (const orgId of organisations.keys()) {
+    orgSettings.set(orgId, defaultOrgSettings());
+  }
+
+  return { organisations, users, labs, orgSettings };
 }
 
-export const mockDb: MockDb = ((globalThis as Record<string, unknown>).__limsMockDbV5 ??=
+export const mockDb: MockDb = ((globalThis as Record<string, unknown>).__limsMockDbV6 ??=
   seedDb()) as MockDb;
+
+export function getOrgSettings(orgId: string): OrgSettings {
+  let settings = mockDb.orgSettings.get(orgId);
+  if (!settings) {
+    settings = defaultOrgSettings();
+    mockDb.orgSettings.set(orgId, settings);
+  }
+  return settings;
+}
 
 export function getOrgIdByName(name: string): string | null {
   for (const org of mockDb.organisations.values()) {

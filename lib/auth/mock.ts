@@ -1,4 +1,4 @@
-import { DEMO_PASSWORD, mockDb } from "@/lib/mock-db";
+import { DEMO_PASSWORD, getOrgSettings, mockDb } from "@/lib/mock-db";
 import type { AuthApi, LoginResult, MfaResult, ResetResult, SessionUser } from "./types";
 import type { MockUser } from "@/lib/mock-db";
 
@@ -13,8 +13,12 @@ import type { MockUser } from "@/lib/mock-db";
 
 const DEMO_MFA_CODE = "123456";
 const DEMO_RESET_TOKEN = "demo-reset-token";
-const LOCKOUT_THRESHOLD = 5; // org-configurable in the real backend (AC 7)
-const MIN_PASSWORD_LENGTH = 12; // org-configurable (AC 4)
+
+// Security policy comes from the organisation's settings (US-A7 AC 2,
+// enforced here per US-A1 AC 4/5/7). Platform staff fall back to defaults.
+function securityPolicy(user: MockUser | undefined) {
+  return getOrgSettings(user?.orgId ?? "org-demolab").security;
+}
 
 function toSessionUser(u: MockUser): SessionUser {
   return { email: u.email, name: u.name, organisation: u.organisation, role: u.role };
@@ -32,7 +36,7 @@ export const mockAuthApi: AuthApi = {
     if (user.locked) return { status: "locked" };
     if (user.password !== password) {
       user.failedAttempts += 1;
-      if (user.failedAttempts >= LOCKOUT_THRESHOLD) user.locked = true;
+      if (user.failedAttempts >= securityPolicy(user).lockoutThreshold) user.locked = true;
       return user.locked ? { status: "locked" } : { status: "invalid" };
     }
     user.failedAttempts = 0;
@@ -42,7 +46,10 @@ export const mockAuthApi: AuthApi = {
     // Only after successful authentication, so the message can't be used to
     // probe org status with guessed passwords (US-A2 AC 6).
     if (orgSuspended(user)) return { status: "org-suspended" };
-    if (user.mfaRequired) return { status: "mfa_required", mfaToken: `mfa:${user.email}` };
+    // MFA applies per user OR organisation-wide (US-A1 AC 5 / US-A7 AC 2).
+    if (user.mfaRequired || (user.orgId && securityPolicy(user).requireMfa)) {
+      return { status: "mfa_required", mfaToken: `mfa:${user.email}` };
+    }
     user.lastLogin = new Date().toLocaleDateString("en-GB", { day: "numeric", month: "short", year: "numeric" });
     return { status: "success", user: toSessionUser(user) };
   },
@@ -63,7 +70,7 @@ export const mockAuthApi: AuthApi = {
   },
 
   async resetPassword(token, newPassword): Promise<ResetResult> {
-    if (token !== DEMO_RESET_TOKEN || newPassword.length < MIN_PASSWORD_LENGTH) {
+    if (token !== DEMO_RESET_TOKEN || newPassword.length < securityPolicy(undefined).minPasswordLength) {
       return { status: "invalid_token" };
     }
     for (const user of mockDb.users.values()) {
@@ -77,7 +84,9 @@ export const mockAuthApi: AuthApi = {
   },
 
   async passwordPolicy() {
-    return { minLength: MIN_PASSWORD_LENGTH };
+    // Mock: the reset token carries no org binding, so use the demo org's
+    // policy. The real backend resolves the policy from the token's account.
+    return { minLength: securityPolicy(undefined).minPasswordLength };
   },
 };
 

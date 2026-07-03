@@ -40,7 +40,7 @@ const adminItems: NavItem[] = [
   { title: "Roles & permissions", href: "/admin/roles", icon: ShieldCheck, requires: "org-settings" },
   { title: "Users", href: "/admin/users", icon: Users, visibleFor: ["admin", "lab-manager"] },
   { title: "Labs", href: "/admin/labs", icon: Building2, requires: "org-settings" },
-  { title: "Settings", href: "/settings/support-access", icon: Settings, requires: "org-settings" },
+  { title: "Settings", href: "/settings", icon: Settings, requires: "org-settings" },
 ];
 
 function visible(items: NavItem[], role: OrgRole | null): NavItem[] {

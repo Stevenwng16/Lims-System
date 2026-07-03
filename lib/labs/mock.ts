@@ -45,6 +45,8 @@ export const mockLabApi: LabApi = {
       methodCount: 0,
       equipmentCount: 0,
       hasActiveWork: false,
+      analystsMayCreateBatches: false,
+      reviewerMustDiffer: false,
     });
     return { status: "success" };
   },
