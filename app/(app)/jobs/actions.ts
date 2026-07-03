@@ -13,7 +13,9 @@ export type JobFormState = { error?: string; success?: boolean };
 // resolver (audit findings 4/6).
 export async function resolveJobActor(): Promise<JobActor> {
   const ctx = await resolveOrgContext();
-  if (ctx.role === null || !ctx.orgId) redirect("/");
+  // role null ⇒ a platform-admin with no valid support context → vendor console
+  // (never "/", which would bounce back here — audit finding 6).
+  if (ctx.role === null || !ctx.orgId) redirect("/platform");
   return {
     email: ctx.user.email,
     role: ctx.role,

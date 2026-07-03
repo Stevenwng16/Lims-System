@@ -8,7 +8,16 @@ import {
   type SampleAcceptance,
 } from "@/lib/mock-db";
 import { generateJobNumber, generateSampleId } from "./ids";
-import type { JobActionResult, JobActor, JobApi, JobInput, JobListItem, SampleInput } from "./types";
+import type {
+  JobActionResult,
+  JobActor,
+  JobApi,
+  JobInput,
+  JobListItem,
+  JobOverviewRow,
+  JobStatus,
+  SampleInput,
+} from "./types";
 
 // Jobs are stored under an org-composite key so a job number that is only
 // unique WITHIN an org (AC 2) can never overwrite another tenant's job
@@ -126,6 +135,48 @@ function toListItem(job: MockJob): JobListItem {
   };
 }
 
+// US-C2 AC 7: status from active (accepted, non-voided) samples.
+function deriveStatus(job: MockJob): JobStatus {
+  if (job.voided) return "closed";
+  const live = job.samples.filter((s) => !s.voided);
+  const active = live.filter(
+    (s) => s.acceptance === "accepted" || s.acceptance === "accepted-with-reservation",
+  );
+  // No testable samples: all live samples rejected (or none live).
+  if (active.length === 0 && live.every((s) => s.acceptance === "rejected")) return "closed";
+  if (active.length > 0 && active.every((s) => s.status === "completed")) return "completed";
+  // Any active sample that has entered/passed a batch means the job has started
+  // (a "completed" sample here implies partial progress — the all-completed
+  // branch above already returned; audit findings 1/4/9).
+  if (active.some((s) => s.status !== "received" && s.status !== null)) return "in-progress";
+  return "not-started";
+}
+
+function overviewRow(job: MockJob, now: number): JobOverviewRow {
+  const live = job.samples.filter((s) => !s.voided);
+  const typeIds = [...new Set(live.map((s) => s.typeId))];
+  const status = deriveStatus(job);
+  const dueTime = job.dueDate ? new Date(job.dueDate).getTime() : NaN;
+  // AC 8: decoupled from status — flagged if past or within 24h and not done.
+  const overdue =
+    status !== "completed" && !job.voided && !Number.isNaN(dueTime) && dueTime <= now + 24 * 3600_000;
+  const methodIds = [
+    ...new Set([...job.requestedMethodIds, ...live.flatMap((s) => s.requestedMethodIds)]),
+  ];
+  return {
+    id: job.id,
+    customer: job.customer,
+    receivedAt: job.receivedAt,
+    dueDate: job.dueDate,
+    sampleTypeLabel: "", // resolved to a name in the page (needs org settings)
+    sampleTypeIds: typeIds,
+    methodIds,
+    status,
+    overdue,
+    voided: job.voided,
+  };
+}
+
 function applySampleEdits(sample: MockSample, s: SampleInput) {
   // AC 12: edit sample details in place — id / jobId / acceptance / consultation
   // / status / attachments are never touched here.
@@ -164,6 +215,26 @@ export const mockJobApi: JobApi = {
     return [...mockDb.jobs.values()]
       .filter((j) => j.orgId === actor.orgId && canSeeLab(actor, j.labId))
       .map(toListItem);
+  },
+
+  async jobOverview(actor, activeLabId): Promise<JobOverviewRow[]> {
+    const now = new Date().getTime();
+    const typeNames = new Map(
+      getOrgSettings(actor.orgId).sampleTypes.map((t) => [t.id, t.name] as const),
+    );
+    return [...mockDb.jobs.values()]
+      .filter((j) => j.orgId === actor.orgId && canSeeLab(actor, j.labId))
+      // Scoped to the active lab (US-C2 AC 1). Org-wide (null) is ONLY for a
+      // support session — a scoped user with no active lab gets an empty list,
+      // never every lab's jobs (audit finding 5).
+      .filter((j) => (actor.isSupport && activeLabId === null) || j.labId === activeLabId)
+      .map((j) => {
+        const row = overviewRow(j, now);
+        const ids = row.sampleTypeIds;
+        row.sampleTypeLabel =
+          ids.length === 0 ? "—" : ids.length === 1 ? (typeNames.get(ids[0]) ?? ids[0]) : "Mixed";
+        return row;
+      });
   },
 
   async getJob(actor, jobId) {

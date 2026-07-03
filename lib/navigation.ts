@@ -2,7 +2,6 @@ import {
   Beaker,
   Building2,
   ClipboardList,
-  Home,
   Settings,
   ShieldCheck,
   Users,
@@ -10,10 +9,10 @@ import {
 } from "lucide-react";
 import { can, type Capability, type OrgRole } from "@/lib/permissions";
 
-// Single source of truth for the navigation structure (US-A3 AC 2), shared by
-// the sidebar and the phase-1 home page so they can never drift (audit
-// finding 14). Items appear only once their feature exists; the list grows per
-// story without layout rework. Visibility follows the US-A4 capability matrix.
+// Single source of truth for the navigation structure (US-A3 AC 2), consumed
+// by the sidebar. Items appear only once their feature exists; the list grows
+// per story without layout rework. Visibility follows the US-A4 capability
+// matrix.
 
 export type NavItem = {
   title: string;
@@ -27,7 +26,6 @@ export type NavItem = {
 };
 
 export const mainNav: NavItem[] = [
-  { title: "Home", href: "/", icon: Home },
   { title: "Jobs", href: "/jobs", icon: ClipboardList, requires: "view-data" },
   { title: "Methods", href: "/methods", icon: Beaker, requires: "view-data" },
 ];
@@ -48,10 +46,9 @@ export function visibleNav(items: NavItem[], role: OrgRole | null): NavItem[] {
   });
 }
 
-// Section-highlight matcher (US-A3 AC 7): Home is exact; every other section
-// also matches its nested routes (e.g. /methods/new), with a segment boundary
-// so /settings never matches /settings-foo (audit finding 12).
+// Section-highlight matcher (US-A3 AC 7): a section matches its own route and
+// its nested routes (e.g. /methods/new), with a segment boundary so /settings
+// never matches a hypothetical /settings-foo (audit finding 12).
 export function isActiveNav(href: string, pathname: string): boolean {
-  if (href === "/") return pathname === "/";
   return pathname === href || pathname.startsWith(`${href}/`);
 }

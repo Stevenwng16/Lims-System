@@ -56,12 +56,32 @@ export type JobListItem = {
   voided: boolean;
 };
 
+// Derived job status for the overview (US-C2 AC 7), from active (accepted,
+// non-voided) samples. Decoupled from the overdue flag (AC 8).
+export type JobStatus = "not-started" | "in-progress" | "completed" | "closed";
+
+export type JobOverviewRow = {
+  id: string;
+  customer: string;
+  receivedAt: string;
+  dueDate: string;
+  sampleTypeLabel: string; // single type name, "Mixed", or "—"
+  sampleTypeIds: string[]; // distinct types among non-voided samples (for filtering)
+  methodIds: string[]; // union of requested methods, job + samples (for filtering)
+  status: JobStatus;
+  overdue: boolean; // due passed or within 24h, and not completed (AC 8)
+  voided: boolean;
+};
+
 export type JobActionResult =
   | { status: "success"; jobId?: string }
   | { status: "error"; message: string };
 
 export interface JobApi {
   listJobs(actor: JobActor): Promise<JobListItem[]>;
+  /** US-C2: overview rows scoped to the active lab (null = org-wide, e.g. a
+   * support session). Derived status + overdue computed server-side. */
+  jobOverview(actor: JobActor, activeLabId: string | null): Promise<JobOverviewRow[]>;
   getJob(actor: JobActor, jobId: string): Promise<MockJob | null>;
   /** Admin / Lab manager only; generates immutable IDs, validates methods. */
   createJob(actor: JobActor, input: JobInput): Promise<JobActionResult>;

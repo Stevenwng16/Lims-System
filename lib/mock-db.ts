@@ -593,7 +593,7 @@ function seedDb(): MockDb {
     extra: Partial<MockSample>,
   ): MockSample => ({
     id,
-    jobId: "MET26-00001",
+    jobId: id.split(".")[0],
     typeId,
     description,
     customerSampleRef: "",
@@ -625,7 +625,7 @@ function seedDb(): MockDb {
     receivedBy: "labmanager@demolab.nl",
     requestedMethodIds: ["m-icpms"],
     priority: "Standard",
-    dueDate: "",
+    dueDate: "2026-07-10",
     notes: "",
     storageLocation: "Fridge A, shelf 2",
     voided: false,
@@ -649,15 +649,69 @@ function seedDb(): MockDb {
       }),
     ],
   });
-  // Counters consistent with the seed: job MET/2026 used 1; sample seq for this
-  // job used 3 (yearly reset is the default). Sample key is org-scoped.
-  sequences.set("job:org-demolab:lab-met:2026", 1);
+  const metJob = (
+    id: string,
+    customer: string,
+    dueDate: string,
+    extra: Partial<MockJob>,
+    samples: MockSample[],
+  ): MockJob => ({
+    id,
+    orgId: "org-demolab",
+    labId: "lab-met",
+    customer,
+    customerRef: "",
+    receivedAt: "2026-06-20T09:00",
+    receivedBy: "labmanager@demolab.nl",
+    requestedMethodIds: ["m-icpms"],
+    priority: "Standard",
+    dueDate,
+    notes: "",
+    storageLocation: "",
+    voided: false,
+    createdAt: "20 Jun 2026",
+    createdBy: "labmanager@demolab.nl",
+    samples,
+    ...extra,
+  });
+  // Not started (samples accepted, still "received"); deadline in the future.
+  jobs.set("org-demolab:MET26-00002", metJob("MET26-00002", "BioFoods BV", "2026-07-20", {}, [
+    sample("MET26-00002.001", "st-1", "Batch A", { acceptance: "accepted", status: "received" }),
+  ]));
+  // In progress + overdue (deadline in the past).
+  jobs.set(
+    "org-demolab:MET26-00003",
+    metJob("MET26-00003", "Stad Rotterdam", "2026-06-25", {}, [
+      sample("MET26-00003.001", "st-2", "Site 3", { acceptance: "accepted", status: "in-progress" }),
+    ]),
+  );
+  // Completed.
+  jobs.set(
+    "org-demolab:MET26-00004",
+    metJob("MET26-00004", "Aqualab Noord", "2026-06-30", {}, [
+      sample("MET26-00004.001", "st-1", "Final", { acceptance: "accepted", status: "completed" }),
+    ]),
+  );
+  // Voided (US-C1 AC 13) — hidden by default in the overview (AC 10).
+  jobs.set(
+    "org-demolab:MET26-00005",
+    metJob("MET26-00005", "Test entry", "", { voided: true, voidReason: "Registered in error (seed)" }, [
+      sample("MET26-00005.001", "st-1", "X", { acceptance: "accepted", status: "received" }),
+    ]),
+  );
+
+  // Counters consistent with the seed (5 Metals jobs in 2026; sample seq per job).
+  sequences.set("job:org-demolab:lab-met:2026", 5);
   sequences.set("sample:org-demolab:MET26-00001", 3);
+  sequences.set("sample:org-demolab:MET26-00002", 1);
+  sequences.set("sample:org-demolab:MET26-00003", 1);
+  sequences.set("sample:org-demolab:MET26-00004", 1);
+  sequences.set("sample:org-demolab:MET26-00005", 1);
 
   return { organisations, users, labs, orgSettings, methods, jobs, sequences };
 }
 
-export const mockDb: MockDb = ((globalThis as Record<string, unknown>).__limsMockDbV11 ??=
+export const mockDb: MockDb = ((globalThis as Record<string, unknown>).__limsMockDbV12 ??=
   seedDb()) as MockDb;
 
 export function getOrgSettings(orgId: string): OrgSettings {
