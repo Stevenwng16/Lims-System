@@ -3,9 +3,13 @@ import type { MockLab } from "@/lib/mock-db";
 // Lab management operations of US-A5. Same pattern as lib/auth and
 // lib/platform: mock behind an interface, real backend plugs in later.
 
-// userCount and methodCount are computed from the live store (users: US-A6,
-// methods: US-B1); equipmentCount stays a seed placeholder until US-B3.
-export type LabSummary = MockLab & { userCount: number; methodCount: number };
+// userCount, methodCount and equipmentCount are all computed from the live
+// store (users: US-A6, methods: US-B1, equipment: US-B3) — never stored.
+export type LabSummary = MockLab & {
+  userCount: number;
+  methodCount: number;
+  equipmentCount: number;
+};
 
 export type LabInput = {
   name: string;

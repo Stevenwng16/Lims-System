@@ -26,6 +26,11 @@ export interface SettingsApi {
     edit: ListEdit,
   ): Promise<SettingsActionResult>;
   updateBarcode(orgId: string, barcode: OrgSettings["barcode"]): Promise<SettingsActionResult>;
+  /** US-B3 AC 6: configurable calibration warning window (default 30 days). */
+  updateEquipmentSettings(
+    orgId: string,
+    equipment: OrgSettings["equipment"],
+  ): Promise<SettingsActionResult>;
   updateLabSettings(
     orgId: string,
     labId: string,

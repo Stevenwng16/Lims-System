@@ -18,6 +18,12 @@ function methodCount(lab: MockLab): number {
   ).length;
 }
 
+function equipmentCount(lab: MockLab): number {
+  return [...mockDb.equipment.values()].filter(
+    (e) => e.orgId === lab.orgId && e.labId === lab.id,
+  ).length;
+}
+
 function validateInput(orgId: string, input: LabInput, excludeLabId?: string): string | null {
   if (!input.name.trim()) return "Lab name is required.";
   if (!input.code.trim()) return "A short code is required (it is used in IDs and labels).";
@@ -50,6 +56,7 @@ export const mockLabApi: LabApi = {
       ...lab,
       userCount: userCount(lab),
       methodCount: methodCount(lab),
+      equipmentCount: equipmentCount(lab),
     }));
   },
 
@@ -65,7 +72,6 @@ export const mockLabApi: LabApi = {
       code,
       description: input.description.trim(),
       status: "active",
-      equipmentCount: 0,
       hasActiveWork: false,
       analystsMayCreateBatches: false,
       reviewerMustDiffer: false,

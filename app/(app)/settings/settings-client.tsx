@@ -6,6 +6,7 @@ import type { ListItem, OrgSettings } from "@/lib/mock-db";
 import { previewIds } from "@/lib/settings/format-id";
 import {
   saveBarcodeAction,
+  saveEquipmentSettingsAction,
   saveIdentifiersAction,
   saveLabSettingsAction,
   saveListAction,
@@ -283,6 +284,38 @@ function BarcodeSection({ barcode }: { barcode: OrgSettings["barcode"] }) {
   );
 }
 
+function EquipmentSection({ equipment }: { equipment: OrgSettings["equipment"] }) {
+  const [state, submit, pending] = useActionState(saveEquipmentSettingsAction, initialState);
+  return (
+    <Card>
+      <CardHeader>
+        <CardTitle>Equipment</CardTitle>
+        <CardDescription>
+          Calibration due dates inside this window show as &quot;Due soon&quot; — a warning, not a
+          block (US-B3).
+        </CardDescription>
+      </CardHeader>
+      <CardContent>
+        <form action={submit} className="space-y-4">
+          <div className="space-y-2">
+            <Label htmlFor="calibrationWarningDays">Calibration warning window (days)</Label>
+            <Input
+              id="calibrationWarningDays"
+              name="calibrationWarningDays"
+              type="number"
+              min={1}
+              max={365}
+              defaultValue={equipment.calibrationWarningDays}
+              className="w-24"
+            />
+          </div>
+          <SaveRow pending={pending} state={state} />
+        </form>
+      </CardContent>
+    </Card>
+  );
+}
+
 type LabSettingsRow = {
   id: string;
   name: string;
@@ -350,7 +383,13 @@ export function SettingsClient({
 }: {
   settings: Pick<
     OrgSettings,
-    "security" | "identifiers" | "jobLabel" | "sampleTypes" | "resultQualifiers" | "barcode"
+    | "security"
+    | "identifiers"
+    | "jobLabel"
+    | "sampleTypes"
+    | "resultQualifiers"
+    | "barcode"
+    | "equipment"
   >;
   labs: LabSettingsRow[];
 }) {
@@ -371,6 +410,7 @@ export function SettingsClient({
         items={settings.resultQualifiers}
       />
       <BarcodeSection barcode={settings.barcode} />
+      <EquipmentSection equipment={settings.equipment} />
       <LabSettingsSection labs={labs} />
     </div>
   );

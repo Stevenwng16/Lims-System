@@ -148,6 +148,15 @@ export const mockSettingsApi: SettingsApi = {
     return { status: "success" };
   },
 
+  async updateEquipmentSettings(orgId, equipment): Promise<SettingsActionResult> {
+    // US-B3 AC 6: the "due soon" window is a warning horizon, not a block —
+    // but it must stay a sane whole number of days.
+    const error = inRange(equipment.calibrationWarningDays, 1, 365, "Calibration warning window");
+    if (error) return { status: "error", message: error };
+    getOrgSettings(orgId).equipment = equipment;
+    return { status: "success" };
+  },
+
   async updateLabSettings(orgId, labId, settings): Promise<SettingsActionResult> {
     const lab = mockDb.labs.get(labId);
     if (!lab || lab.orgId !== orgId) return { status: "error", message: "Unknown lab." };

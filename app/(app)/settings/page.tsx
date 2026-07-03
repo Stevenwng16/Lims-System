@@ -55,6 +55,7 @@ export default async function SettingsPage() {
           sampleTypes: settings.sampleTypes,
           resultQualifiers: settings.resultQualifiers,
           barcode: settings.barcode,
+          equipment: settings.equipment,
         }}
         labs={labs.map((lab) => ({
           id: lab.id,

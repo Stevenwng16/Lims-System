@@ -38,9 +38,8 @@ export type MockLab = {
   description: string;
   status: "active" | "inactive";
   statusReason?: string; // required on every status change (invariant 2)
-  // Mock counts/flags until equipment (US-B3) and jobs/batches (epics C/D)
-  // are real (method counts are computed from real methods since US-B1):
-  equipmentCount: number;
+  // Mock flag until jobs/batches are real (epics C/D); method and equipment
+  // counts are computed from the live store (US-B1 / US-B3):
   hasActiveWork: boolean; // blocks deactivation (US-A5 AC 5)
   // Per-lab workflow settings (US-A7 AC 6) — enforced via US-A4/US-D6.
   analystsMayCreateBatches: boolean;
@@ -79,6 +78,11 @@ export type OrgSettings = {
     showJobNumber: boolean;
     showDate: boolean;
   };
+  equipment: {
+    // "Due soon" window for calibration due dates (US-B3 AC 6 — configurable
+    // per organisation, invariant 7; default 30 days).
+    calibrationWarningDays: number;
+  };
 };
 
 export function defaultOrgSettings(): OrgSettings {
@@ -111,6 +115,9 @@ export function defaultOrgSettings(): OrgSettings {
       showSampleType: true,
       showJobNumber: false,
       showDate: false,
+    },
+    equipment: {
+      calibrationWarningDays: 30,
     },
   };
 }
@@ -304,6 +311,114 @@ export type MockQcMaterial = {
   createdAt: string;
 };
 
+// Equipment (US-B3). A piece of equipment belongs to one lab within one
+// organisation (invariant 5). The availability state (Available / Due soon /
+// Blocked) is COMPUTED from calibration, checks and the out-of-service flag —
+// it is deliberately never a stored column (AC 6), so there is nothing a
+// generic "unblock" could flip (AC 7 / hard-never list).
+
+// Configurable per organisation (AC 2); managed by Admins. Deactivate, never
+// delete — equipment already of an inactive type keeps it (grandfathering).
+export type MockEquipmentType = {
+  id: string;
+  orgId: string;
+  name: string;
+  status: "active" | "inactive";
+  statusReason?: string; // required on every status change (invariant 2)
+};
+
+export type EquipmentCalibration = {
+  intervalMonths: number | null;
+  lastDate: string | null; // "yyyy-mm-dd"
+  // Derived from lastDate + interval, or set manually (AC 3, e.g. taken from
+  // the certificate). null = no calibration requirement recorded.
+  dueDate: string | null;
+  dueDateManual: boolean;
+  certificate: Attachment | null; // via the central attachment facility (ADR-3)
+};
+
+export type CheckFrequency = "per-use" | "daily" | "weekly";
+
+// AC 4/5: a numeric criterion is evaluated BY THE SYSTEM at logging (Fable
+// review amendment 1 Jul 2026); the manual pass/fail choice exists only for
+// check types without one. Decimal fields are STRINGS, never floats.
+export type CheckCriterion =
+  | { kind: "numeric"; expectedValue: string; unit: string | null; tolerance: QcTolerance }
+  | { kind: "manual"; description: string };
+
+export type MockCheckType = {
+  id: string;
+  name: string;
+  frequency: CheckFrequency;
+  criterion: CheckCriterion;
+  // Retired check types stop being required but their logged history stays.
+  status: "active" | "inactive";
+  statusReason?: string;
+};
+
+// Append-only (AC 5): a correction is a NEW entry, never an overwrite. The
+// latest entry per check type is the current state (a re-check supersedes).
+export type MockCheckEntry = {
+  id: string;
+  checkTypeId: string;
+  performedAt: string; // ISO datetime — set server-side at logging
+  performedBy: string; // the logged-in user (invariant 6)
+  measuredValue: string | null; // decimal STRING
+  result: "pass" | "fail";
+  resultComputed: boolean; // true = derived from the numeric criterion (AC 5)
+  notes: string;
+};
+
+export type EquipmentEventType =
+  | "created"
+  | "edited"
+  | "calibration-updated"
+  | "certificate-uploaded"
+  | "check-type-added"
+  | "check-type-changed"
+  | "check-logged"
+  | "out-of-service"
+  | "returned-to-service"
+  | "links-changed"
+  | "status-changed";
+
+// Append-only per-equipment history (AC 9/14): late/failed checks, blocked
+// causes and both out-of-service directions stay answerable afterwards. The
+// real backend mirrors this into the org-wide audit log (invariant 1).
+export type MockEquipmentEvent = {
+  id: string;
+  at: string; // ISO datetime
+  by: string;
+  type: EquipmentEventType;
+  summary: string; // human-readable, includes before → after on edits
+};
+
+export type MockEquipment = {
+  id: string;
+  orgId: string;
+  labId: string;
+  name: string;
+  assetId: string; // unique within the organisation (AC 2/13); never reissued
+  typeId: string; // → equipmentTypes
+  manufacturer: string;
+  model: string;
+  serialNumber: string;
+  location: string;
+  description: string;
+  calibration: EquipmentCalibration;
+  checkTypes: MockCheckType[];
+  checks: MockCheckEntry[]; // append-only (AC 5)
+  // Instance-level link to methods / method process steps (AC 10); stepId null
+  // = linked to the method as a whole. Fills the US-B1 AC 8 hook; epic D reads
+  // the availability state through this relation for gating.
+  methodLinks: { methodId: string; stepId: string | null }[];
+  outOfService: { reason: string; since: string; by: string } | null; // AC 8
+  status: "active" | "inactive"; // deactivate, never delete (AC 11)
+  statusReason?: string;
+  events: MockEquipmentEvent[]; // append-only (AC 9/14)
+  createdAt: string;
+};
+
 export type MockDb = {
   organisations: Map<string, MockOrganisation>;
   users: Map<string, MockUser>;
@@ -311,6 +426,8 @@ export type MockDb = {
   orgSettings: Map<string, OrgSettings>;
   methods: Map<string, MockMethod>;
   qcMaterials: Map<string, MockQcMaterial>;
+  equipment: Map<string, MockEquipment>;
+  equipmentTypes: Map<string, MockEquipmentType>;
   jobs: Map<string, MockJob>;
   // Per-org+per-lab+period job counters and per-job sample counters (US-A7 AC 3
   // sequence isolation). Key formats: "job:<orgId>:<labId>:<period>" and
@@ -319,6 +436,19 @@ export type MockDb = {
 };
 
 export const DEMO_PASSWORD = "LabDemo2026!!";
+
+// Starter equipment-type list seeded at provisioning (US-B3 AC 2 — the list is
+// configurable per organisation; these are just safe defaults, US-A2 AC 5).
+export const DEFAULT_EQUIPMENT_TYPES = ["Balance", "pH meter", "Thermometer"];
+
+export function seedDefaultEquipmentTypes(orgId: string): void {
+  for (const [i, name] of DEFAULT_EQUIPMENT_TYPES.entries()) {
+    const id = `eqt-${orgId}-${i}`;
+    if (!mockDb.equipmentTypes.has(id)) {
+      mockDb.equipmentTypes.set(id, { id, orgId, name, status: "active" });
+    }
+  }
+}
 
 function seedDb(): MockDb {
   const organisations = new Map<string, MockOrganisation>();
@@ -440,7 +570,6 @@ function seedDb(): MockDb {
     code: "MET",
     description: "Metals analysis, ground floor",
     status: "active",
-    equipmentCount: 15,
     hasActiveWork: true, // demo: deactivation is blocked (AC 5)
     analystsMayCreateBatches: false,
     reviewerMustDiffer: false,
@@ -452,7 +581,6 @@ function seedDb(): MockDb {
     code: "WAT",
     description: "Water & soil testing, 2nd floor",
     status: "active",
-    equipmentCount: 9,
     hasActiveWork: false, // demo: can be deactivated (and reactivated)
     analystsMayCreateBatches: false,
     reviewerMustDiffer: false,
@@ -465,7 +593,6 @@ function seedDb(): MockDb {
     description: "Sampling location Rotterdam",
     status: "inactive",
     statusReason: "Site closed for renovation (mock seed)",
-    equipmentCount: 4,
     hasActiveWork: false,
     analystsMayCreateBatches: false,
     reviewerMustDiffer: false,
@@ -478,7 +605,6 @@ function seedDb(): MockDb {
     code: "MAIN",
     description: "",
     status: "active",
-    equipmentCount: 6,
     hasActiveWork: false,
     analystsMayCreateBatches: false,
     reviewerMustDiffer: false,
@@ -490,7 +616,6 @@ function seedDb(): MockDb {
     code: "MAIN",
     description: "",
     status: "active",
-    equipmentCount: 2,
     hasActiveWork: false,
     analystsMayCreateBatches: false,
     reviewerMustDiffer: false,
@@ -729,6 +854,284 @@ function seedDb(): MockDb {
     createdAt: "3 Nov 2025",
   });
 
+  // Seed equipment (US-B3). Check/calibration dates are partly DYNAMIC so the
+  // demo states stay correct whenever the dev server starts: BAL-001 Available
+  // (checked today), ICP-01 Due soon (calibration inside the warning window),
+  // BAL-002 Blocked (calibration expired + check overdue), PH-03 Blocked (last
+  // check failed), OVN-01 Blocked (out of service; inactive type grandfathered),
+  // BAL-000 inactive (deactivate-not-delete).
+  const isoDay = (offsetDays: number) =>
+    new Date(Date.now() + offsetDays * 86400_000).toISOString().slice(0, 10);
+  const isoAt = (offsetDays: number, time: string) => `${isoDay(offsetDays)}T${time}`;
+
+  const equipmentTypes = new Map<string, MockEquipmentType>();
+  equipmentTypes.set("eqt-bal", { id: "eqt-bal", orgId: "org-demolab", name: "Balance", status: "active" });
+  equipmentTypes.set("eqt-icp", { id: "eqt-icp", orgId: "org-demolab", name: "ICP-OES", status: "active" });
+  equipmentTypes.set("eqt-ph", { id: "eqt-ph", orgId: "org-demolab", name: "pH meter", status: "active" });
+  equipmentTypes.set("eqt-oven", {
+    id: "eqt-oven",
+    orgId: "org-demolab",
+    name: "Muffle furnace",
+    status: "inactive",
+    statusReason: "Type list cleanup (mock seed) — existing furnace keeps it (grandfathered)",
+  });
+  for (const orgId of ["org-labalpha", "org-oldcust"]) {
+    for (const [i, name] of DEFAULT_EQUIPMENT_TYPES.entries()) {
+      const id = `eqt-${orgId}-${i}`;
+      equipmentTypes.set(id, { id, orgId, name, status: "active" });
+    }
+  }
+
+  const balanceCheck = (id: string): MockCheckType => ({
+    id,
+    name: "Daily check",
+    frequency: "daily",
+    criterion: {
+      kind: "numeric",
+      expectedValue: "100.000",
+      unit: "g",
+      tolerance: { kind: "absolute", value: "0.002" },
+    },
+    status: "active",
+  });
+  const checkEvent = (entry: MockCheckEntry, checkName: string): MockEquipmentEvent => ({
+    id: `eqev-${entry.id}`,
+    at: entry.performedAt,
+    by: entry.performedBy,
+    type: "check-logged",
+    summary: `${checkName}: ${entry.result}${entry.measuredValue ? ` (measured ${entry.measuredValue})` : ""}`,
+  });
+
+  const equipment = new Map<string, MockEquipment>();
+  // Available — calibrated, daily check passed today. The day-before entries
+  // demo the append-only correction path (AC 5): a computed fail is never
+  // edited; the re-check is a NEW entry that supersedes it.
+  const bal1Checks: MockCheckEntry[] = [
+    { id: "chk-b1-1", checkTypeId: "ct-bal1", performedAt: isoAt(-2, "08:05:00.000Z"), performedBy: "analyst@demolab.nl", measuredValue: "100.001", result: "pass", resultComputed: true, notes: "" },
+    { id: "chk-b1-2", checkTypeId: "ct-bal1", performedAt: isoAt(-1, "08:10:00.000Z"), performedBy: "analyst@demolab.nl", measuredValue: "100.003", result: "fail", resultComputed: true, notes: "" },
+    { id: "chk-b1-3", checkTypeId: "ct-bal1", performedAt: isoAt(-1, "08:25:00.000Z"), performedBy: "analyst@demolab.nl", measuredValue: "100.001", result: "pass", resultComputed: true, notes: "Re-check after cleaning the pan — corrects the 08:10 entry (append-only)." },
+    { id: "chk-b1-4", checkTypeId: "ct-bal1", performedAt: isoAt(0, "08:12:00.000Z"), performedBy: "analyst@demolab.nl", measuredValue: "100.000", result: "pass", resultComputed: true, notes: "" },
+  ];
+  equipment.set("eq-bal001", {
+    id: "eq-bal001",
+    orgId: "org-demolab",
+    labId: "lab-met",
+    name: "Analytical balance 1",
+    assetId: "BAL-001",
+    typeId: "eqt-bal",
+    manufacturer: "Mettler Toledo",
+    model: "XP205",
+    serialNumber: "MT-8842217",
+    location: "Weighing room",
+    description: "",
+    calibration: {
+      intervalMonths: 12,
+      lastDate: "2026-01-15",
+      dueDate: "2027-01-15",
+      dueDateManual: false,
+      certificate: {
+        id: "att-cal-bal001",
+        fileName: "cal_BAL-001_2026.pdf",
+        sizeBytes: 88_064,
+        sha256: "seed-checksum-no-real-file-0000000000000000000000000000000000000000",
+        uploadedAt: "15 Jan 2026",
+        uploadedBy: "labmanager@demolab.nl",
+      },
+    },
+    checkTypes: [balanceCheck("ct-bal1")],
+    checks: bal1Checks,
+    methodLinks: [{ methodId: "m-icpms", stepId: "s1" }],
+    outOfService: null,
+    status: "active",
+    events: [
+      { id: "eqev-b1-created", at: "2026-01-10T09:00:00.000Z", by: "admin@demolab.nl", type: "created", summary: "Equipment created" },
+      { id: "eqev-b1-cal", at: "2026-01-15T14:00:00.000Z", by: "labmanager@demolab.nl", type: "calibration-updated", summary: "last: — → 2026-01-15; due: — → 2027-01-15 (interval 12 months)" },
+      ...bal1Checks.map((c) => checkEvent(c, "Daily check")),
+    ],
+    createdAt: "10 Jan 2026",
+  });
+  // Due soon — calibration due date inside the (default 30-day) warning window.
+  equipment.set("eq-icp01", {
+    id: "eq-icp01",
+    orgId: "org-demolab",
+    labId: "lab-wat",
+    name: "ICP-OES",
+    assetId: "ICP-01",
+    typeId: "eqt-icp",
+    manufacturer: "PerkinElmer",
+    model: "Avio 550",
+    serialNumber: "PE-115508",
+    location: "Instrument room 2",
+    description: "",
+    calibration: {
+      intervalMonths: 12,
+      lastDate: "2025-07-25",
+      dueDate: isoDay(20), // manual due date from the certificate (AC 3)
+      dueDateManual: true,
+      certificate: null,
+    },
+    checkTypes: [],
+    checks: [],
+    methodLinks: [],
+    outOfService: null,
+    status: "active",
+    events: [
+      { id: "eqev-i1-created", at: "2025-07-25T10:00:00.000Z", by: "admin@demolab.nl", type: "created", summary: "Equipment created" },
+    ],
+    createdAt: "25 Jul 2025",
+  });
+  // Blocked — calibration expired AND the daily check is overdue.
+  const bal2Checks: MockCheckEntry[] = [
+    { id: "chk-b2-1", checkTypeId: "ct-bal2", performedAt: "2026-06-20T08:30:00.000Z", performedBy: "analyst@demolab.nl", measuredValue: "100.001", result: "pass", resultComputed: true, notes: "" },
+  ];
+  equipment.set("eq-bal002", {
+    id: "eq-bal002",
+    orgId: "org-demolab",
+    labId: "lab-met",
+    name: "Analytical balance 2",
+    assetId: "BAL-002",
+    typeId: "eqt-bal",
+    manufacturer: "Sartorius",
+    model: "Cubis II",
+    serialNumber: "SA-2201984",
+    location: "Weighing room",
+    description: "Backup balance",
+    calibration: {
+      intervalMonths: 12,
+      lastDate: "2025-06-10",
+      dueDate: "2026-06-10",
+      dueDateManual: false,
+      certificate: null,
+    },
+    checkTypes: [balanceCheck("ct-bal2")],
+    checks: bal2Checks,
+    methodLinks: [{ methodId: "m-icpms", stepId: "s1" }],
+    outOfService: null,
+    status: "active",
+    events: [
+      { id: "eqev-b2-created", at: "2025-06-10T09:00:00.000Z", by: "admin@demolab.nl", type: "created", summary: "Equipment created" },
+      ...bal2Checks.map((c) => checkEvent(c, "Daily check")),
+    ],
+    createdAt: "10 Jun 2025",
+  });
+  // Blocked — last check FAILED (computed from the numeric criterion, AC 5);
+  // performing a new check that passes restores it (AC 7).
+  const ph3Checks: MockCheckEntry[] = [
+    { id: "chk-p3-1", checkTypeId: "ct-ph3", performedAt: isoAt(-2, "09:00:00.000Z"), performedBy: "analyst@demolab.nl", measuredValue: "7.02", result: "pass", resultComputed: true, notes: "" },
+    { id: "chk-p3-2", checkTypeId: "ct-ph3", performedAt: isoAt(-1, "09:05:00.000Z"), performedBy: "analyst@demolab.nl", measuredValue: "7.21", result: "fail", resultComputed: true, notes: "Electrode drift suspected." },
+  ];
+  equipment.set("eq-ph03", {
+    id: "eq-ph03",
+    orgId: "org-demolab",
+    labId: "lab-wat",
+    name: "pH meter",
+    assetId: "PH-03",
+    typeId: "eqt-ph",
+    manufacturer: "Metrohm",
+    model: "913",
+    serialNumber: "MH-771203",
+    location: "Bench 4",
+    description: "",
+    calibration: {
+      intervalMonths: 6,
+      lastDate: "2026-03-20",
+      dueDate: "2026-09-20",
+      dueDateManual: false,
+      certificate: null,
+    },
+    checkTypes: [
+      {
+        id: "ct-ph3",
+        name: "Buffer 7.00 check",
+        frequency: "daily",
+        criterion: {
+          kind: "numeric",
+          expectedValue: "7.00",
+          unit: null,
+          tolerance: { kind: "absolute", value: "0.05" },
+        },
+        status: "active",
+      },
+    ],
+    checks: ph3Checks,
+    methodLinks: [{ methodId: "m-cond", stepId: null }],
+    outOfService: null,
+    status: "active",
+    events: [
+      { id: "eqev-p3-created", at: "2026-03-20T09:00:00.000Z", by: "admin@demolab.nl", type: "created", summary: "Equipment created" },
+      ...ph3Checks.map((c) => checkEvent(c, "Buffer 7.00 check")),
+    ],
+    createdAt: "20 Mar 2026",
+  });
+  // Blocked — manually out of service (AC 8), the one human-cleared cause.
+  // Its type is inactive: existing equipment keeps it (grandfathered).
+  equipment.set("eq-ovn01", {
+    id: "eq-ovn01",
+    orgId: "org-demolab",
+    labId: "lab-met",
+    name: "Muffle furnace",
+    assetId: "OVN-01",
+    typeId: "eqt-oven",
+    manufacturer: "Nabertherm",
+    model: "L 9/11",
+    serialNumber: "NB-40917",
+    location: "Ashing room",
+    description: "",
+    calibration: {
+      intervalMonths: null,
+      lastDate: null,
+      dueDate: null,
+      dueDateManual: false,
+      certificate: null,
+    },
+    checkTypes: [],
+    checks: [],
+    methodLinks: [],
+    outOfService: {
+      reason: "Heating element failure — awaiting repair",
+      since: isoAt(-5, "11:30:00.000Z"),
+      by: "labmanager@demolab.nl",
+    },
+    status: "active",
+    events: [
+      { id: "eqev-o1-created", at: "2025-02-01T09:00:00.000Z", by: "admin@demolab.nl", type: "created", summary: "Equipment created" },
+      { id: "eqev-o1-oos", at: isoAt(-5, "11:30:00.000Z"), by: "labmanager@demolab.nl", type: "out-of-service", summary: "Taken out of service: Heating element failure — awaiting repair" },
+    ],
+    createdAt: "1 Feb 2025",
+  });
+  // Inactive — deactivated with a reason, never deleted; history retained (AC 11).
+  equipment.set("eq-bal000", {
+    id: "eq-bal000",
+    orgId: "org-demolab",
+    labId: "lab-met",
+    name: "Analytical balance 0",
+    assetId: "BAL-000",
+    typeId: "eqt-bal",
+    manufacturer: "Mettler Toledo",
+    model: "AG204",
+    serialNumber: "MT-0917754",
+    location: "Storage",
+    description: "Decommissioned 2025",
+    calibration: {
+      intervalMonths: 12,
+      lastDate: "2024-11-20",
+      dueDate: "2025-11-20",
+      dueDateManual: false,
+      certificate: null,
+    },
+    checkTypes: [],
+    checks: [],
+    methodLinks: [],
+    outOfService: null,
+    status: "inactive",
+    statusReason: "Replaced by BAL-001 (mock seed)",
+    events: [
+      { id: "eqev-b0-created", at: "2024-11-20T09:00:00.000Z", by: "admin@demolab.nl", type: "created", summary: "Equipment created" },
+      { id: "eqev-b0-status", at: "2026-01-12T09:00:00.000Z", by: "admin@demolab.nl", type: "status-changed", summary: "active → inactive: Replaced by BAL-001 (mock seed)" },
+    ],
+    createdAt: "20 Nov 2024",
+  });
+
   // Seed one example job (US-C1) so the list/detail have content. Sample types
   // reference the org's seeded sample-type list ids (st-1 Water, st-2 Soil).
   const jobs = new Map<string, MockJob>();
@@ -855,10 +1258,21 @@ function seedDb(): MockDb {
   sequences.set("sample:org-demolab:MET26-00004", 1);
   sequences.set("sample:org-demolab:MET26-00005", 1);
 
-  return { organisations, users, labs, orgSettings, methods, qcMaterials, jobs, sequences };
+  return {
+    organisations,
+    users,
+    labs,
+    orgSettings,
+    methods,
+    qcMaterials,
+    equipment,
+    equipmentTypes,
+    jobs,
+    sequences,
+  };
 }
 
-export const mockDb: MockDb = ((globalThis as Record<string, unknown>).__limsMockDbV15 ??=
+export const mockDb: MockDb = ((globalThis as Record<string, unknown>).__limsMockDbV16 ??=
   seedDb()) as MockDb;
 
 export function getOrgSettings(orgId: string): OrgSettings {
@@ -867,6 +1281,10 @@ export function getOrgSettings(orgId: string): OrgSettings {
     settings = defaultOrgSettings();
     mockDb.orgSettings.set(orgId, settings);
   }
+  // Backfill sections added by later stories: a store seeded under an older
+  // shape survives HMR on globalThis, so a missing section would otherwise
+  // crash a long-running dev server until restart (dev-only concern).
+  settings.equipment ??= defaultOrgSettings().equipment;
   return settings;
 }
 

@@ -3,6 +3,7 @@ import {
   Building2,
   ClipboardList,
   FlaskRound,
+  Microscope,
   Settings,
   ShieldCheck,
   Users,
@@ -28,8 +29,11 @@ export type NavItem = {
 
 export const mainNav: NavItem[] = [
   { title: "Jobs", href: "/jobs", icon: ClipboardList, requires: "view-data" },
-  // First item of the US-A3 "Quality" section; Equipment joins with US-B3.
+  // The US-A3 "Quality" section: QC materials (US-B2) + Equipment (US-B3).
+  // Analysts need Equipment too — they log the routine checks (view-data
+  // covers every org role; writes are gated server-side per US-B3).
   { title: "QC materials", href: "/quality/qc-materials", icon: FlaskRound, requires: "view-data" },
+  { title: "Equipment", href: "/quality/equipment", icon: Microscope, requires: "view-data" },
   { title: "Methods", href: "/methods", icon: Beaker, requires: "view-data" },
 ];
 

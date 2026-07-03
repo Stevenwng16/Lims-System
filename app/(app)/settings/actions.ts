@@ -94,6 +94,18 @@ export async function saveBarcodeAction(
   );
 }
 
+export async function saveEquipmentSettingsAction(
+  _prev: SettingsFormState,
+  formData: FormData,
+): Promise<SettingsFormState> {
+  const orgId = await requireAdminOrgId();
+  return done(
+    await settingsApi.updateEquipmentSettings(orgId, {
+      calibrationWarningDays: Number(formData.get("calibrationWarningDays")),
+    }),
+  );
+}
+
 export async function saveLabSettingsAction(
   _prev: SettingsFormState,
   formData: FormData,

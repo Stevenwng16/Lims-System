@@ -1,4 +1,9 @@
-import { defaultOrgSettings, mockDb, type MockOrganisation } from "@/lib/mock-db";
+import {
+  defaultOrgSettings,
+  mockDb,
+  seedDefaultEquipmentTypes,
+  type MockOrganisation,
+} from "@/lib/mock-db";
 import type { ActionResult, PlatformApi } from "./types";
 
 function grantIsActive(org: MockOrganisation): boolean {
@@ -61,11 +66,13 @@ export const mockPlatformApi: PlatformApi = {
       code: "MAIN",
       description: "",
       status: "active",
-      equipmentCount: 0,
       hasActiveWork: false,
       analystsMayCreateBatches: false,
       reviewerMustDiffer: false,
     });
+    // US-B3 AC 2: the configurable equipment-type list starts with safe
+    // defaults, like every other provisioned list (US-A2 AC 5).
+    seedDefaultEquipmentTypes(id);
     console.log(`[mock platform] setup invitation sent to ${adminEmail} for "${trimmed}" (AC 4/5: seeded defaults applied)`);
     return { status: "success" };
   },
