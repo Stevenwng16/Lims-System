@@ -69,12 +69,14 @@ export type OrgSettings = {
   sampleTypes: ListItem[];
   resultQualifiers: ListItem[];
   barcode: {
-    symbology: "code128" | "qr";
+    symbology: "code128" | "qr"; // QR is a US-C4 "Later" item; only Code 128 is offered
     widthMm: number;
     heightMm: number;
-    // The human-readable sample ID can never be switched off (AC 9b).
+    // The human-readable sample ID can never be switched off (US-C4 AC 5).
+    // Default label = ID + customer + type; standalone job number & date off.
+    showCustomer: boolean;
+    showSampleType: boolean;
     showJobNumber: boolean;
-    showClient: boolean;
     showDate: boolean;
   };
 };
@@ -105,9 +107,10 @@ export function defaultOrgSettings(): OrgSettings {
       symbology: "code128",
       widthMm: 50,
       heightMm: 25,
-      showJobNumber: true,
-      showClient: false,
-      showDate: true,
+      showCustomer: true,
+      showSampleType: true,
+      showJobNumber: false,
+      showDate: false,
     },
   };
 }
@@ -375,7 +378,7 @@ function seedDb(): MockDb {
     organisation: "OldCust BV",
     role: "read-only",
     orgId: "org-oldcust",
-    labs: ["General"],
+    labs: ["Main lab"], // must reference an existing org-oldcust lab (finding 25)
     clearances: [],
     mfaRequired: false,
   });
@@ -711,7 +714,7 @@ function seedDb(): MockDb {
   return { organisations, users, labs, orgSettings, methods, jobs, sequences };
 }
 
-export const mockDb: MockDb = ((globalThis as Record<string, unknown>).__limsMockDbV12 ??=
+export const mockDb: MockDb = ((globalThis as Record<string, unknown>).__limsMockDbV14 ??=
   seedDb()) as MockDb;
 
 export function getOrgSettings(orgId: string): OrgSettings {

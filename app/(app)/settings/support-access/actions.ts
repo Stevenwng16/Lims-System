@@ -26,7 +26,11 @@ export async function requireOrgAdmin(): Promise<string> {
     redirect("/");
   }
   const orgId = getOrgIdByName(session.user.organisation);
-  if (!orgId) redirect("/");
+  // A suspended organisation's admin cannot manage grants either (US-A2 AC 6;
+  // Fable re-review findings 2/22) — same gate as resolveOrgContext.
+  if (!orgId || mockDb.organisations.get(orgId)?.status !== "active") {
+    redirect("/session-expired");
+  }
   return orgId;
 }
 

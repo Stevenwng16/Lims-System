@@ -65,16 +65,26 @@ const SAMPLE_TYPE_IDS = (orgId: string) =>
 
 // Per-sample rules (AC 14) against the job's lab — shared by create, update
 // and add (US-C3 AC 7), so a single new sample is never gated on stale
-// whole-job header state (audit findings 2/4).
-function validateSample(orgId: string, labId: string, s: SampleInput): string | null {
+// whole-job header state (audit findings 2/4). `grandfather` carries an
+// EXISTING sample's current type/methods: references a sample already holds
+// stay valid even after the type/method was deactivated, so editing an old
+// record never dead-ends (Fable re-review findings 8/12/20). New references
+// to inactive options remain rejected.
+function validateSample(
+  orgId: string,
+  labId: string,
+  s: SampleInput,
+  grandfather?: { typeId: string; methodIds: string[] },
+): string | null {
   const activeMethods = activeMethodIdsForLab(orgId, labId);
-  if (!SAMPLE_TYPE_IDS(orgId).has(s.typeId)) return "Each sample needs a valid sample type.";
+  const typeOk = SAMPLE_TYPE_IDS(orgId).has(s.typeId) || s.typeId === grandfather?.typeId;
+  if (!typeOk) return "Each sample needs a valid sample type.";
   if (!s.description.trim()) return "Each sample needs a description.";
   if (s.quantity && !DECIMAL_PATTERN.test(s.quantity)) {
     return "Sample quantity must be a plain decimal number with a point (e.g. 1.5).";
   }
   for (const id of s.requestedMethodIds) {
-    if (!activeMethods.has(id)) {
+    if (!activeMethods.has(id) && !grandfather?.methodIds.includes(id)) {
       return "Each sample's requested methods must be active methods of the job's lab.";
     }
   }
@@ -308,13 +318,47 @@ export const mockJobApi: JobApi = {
     const loaded = loadJobForWrite(actor, jobId);
     if ("error" in loaded) return { status: "error", message: loaded.error };
     const { job } = loaded;
-    // The lab is fixed after registration (the ID already embeds its code).
-    const error = validate(actor, { ...input, labId: job.labId }, job);
-    if (error) return { status: "error", message: error };
 
-    // AC 12: the job number and existing sample IDs never change. Header fields
-    // and existing sample details are edited in place; only genuinely new rows
-    // (no matching id) mint a new sample ID. Voided samples are retained.
+    // Header validation (the lab is fixed after registration — the ID embeds
+    // its code). Job-level methods a job ALREADY references stay valid after
+    // deactivation; only NEW references must be active (findings 8/12/20).
+    if (!input.customer.trim()) return { status: "error", message: "The customer name is required." };
+    if (!input.receivedAt.trim()) {
+      return { status: "error", message: "The date and time of receipt are required." };
+    }
+    const activeMethods = activeMethodIdsForLab(actor.orgId, job.labId);
+    for (const id of input.requestedMethodIds) {
+      if (!activeMethods.has(id) && !job.requestedMethodIds.includes(id)) {
+        return { status: "error", message: "Requested methods must be active methods of the job's lab." };
+      }
+    }
+
+    // Validate every submitted sample BEFORE mutating anything. Submitted ids
+    // must belong to this job (a client can never smuggle in a foreign or
+    // invented id), and existing samples grandfather their current references.
+    const byId = new Map(job.samples.map((s) => [s.id, s]));
+    for (const s of input.samples) {
+      if (s.id) {
+        const existing = byId.get(s.id);
+        if (!existing) {
+          return { status: "error", message: "Unknown sample in the submission — reload and try again." };
+        }
+        if (existing.voided) continue; // voided samples are frozen; ignore edits
+        const error = validateSample(actor.orgId, job.labId, s, {
+          typeId: existing.typeId,
+          methodIds: existing.requestedMethodIds,
+        });
+        if (error) return { status: "error", message: error };
+      } else {
+        const error = validateSample(actor.orgId, job.labId, s);
+        if (error) return { status: "error", message: error };
+      }
+    }
+
+    // All checks passed — apply. AC 12: the job number and existing sample IDs
+    // never change. An edit can NEVER remove a sample (removal is a void with a
+    // reason, US-C3 AC 8): existing samples not present in the submission are
+    // retained untouched (never-delete — Fable re-review findings 5/11/19).
     job.customer = input.customer.trim();
     job.customerRef = input.customerRef.trim();
     job.receivedAt = input.receivedAt;
@@ -324,20 +368,14 @@ export const mockJobApi: JobApi = {
     job.notes = input.notes.trim();
     job.storageLocation = input.storageLocation.trim();
 
-    const existingById = new Map(job.samples.map((s) => [s.id, s]));
-    const reconciled: MockSample[] = [];
     for (const s of input.samples) {
-      const existing = s.id ? existingById.get(s.id) : undefined;
-      if (existing) {
+      if (s.id) {
+        const existing = byId.get(s.id)!;
         if (!existing.voided) applySampleEdits(existing, s);
-        reconciled.push(existing);
       } else {
-        reconciled.push(buildSample(actor.orgId, job.labId, job.id, job.receivedAt, s));
+        job.samples.push(buildSample(actor.orgId, job.labId, job.id, job.receivedAt, s));
       }
     }
-    // Keep any voided samples not present in the submission (retained record).
-    for (const s of job.samples) if (s.voided && !reconciled.includes(s)) reconciled.push(s);
-    job.samples = reconciled;
     return { status: "success", jobId };
   },
 
@@ -346,6 +384,20 @@ export const mockJobApi: JobApi = {
     if ("error" in loaded) return { status: "error", message: loaded.error };
     const sample = loaded.job.samples.find((s) => s.id === sampleId);
     if (!sample || sample.voided) return { status: "error", message: "Unknown sample." };
+
+    // Whitelist the decision server-side — a forged value must never become a
+    // stored §7.4.3 record (Fable re-review findings 7/13).
+    const VALID: SampleAcceptance[] = ["accepted", "accepted-with-reservation", "rejected"];
+    if (!VALID.includes(acceptance)) return { status: "error", message: "Invalid acceptance decision." };
+    // Once a sample has entered batch processing, its acceptance decision is a
+    // frozen part of the record — changes go through epic D's workflows, never
+    // a retro-flip that erases lifecycle state (findings 9/26).
+    if (sample.status !== null && sample.status !== "received") {
+      return {
+        status: "error",
+        message: "This sample is already in processing — its acceptance decision can no longer be changed here.",
+      };
+    }
 
     if (acceptance === "accepted-with-reservation" && !reason.trim()) {
       return { status: "error", message: "A reservation requires a reason (carried to the report)." };

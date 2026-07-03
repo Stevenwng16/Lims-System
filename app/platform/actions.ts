@@ -5,6 +5,7 @@ import { cookies } from "next/headers";
 import { redirect } from "next/navigation";
 import { platformApi } from "@/lib/platform";
 import { decodeSession, SESSION_COOKIE } from "@/lib/auth/session";
+import { mockDb } from "@/lib/mock-db";
 import {
   decodeSupportSession,
   encodeSupportSession,
@@ -17,8 +18,13 @@ async function requirePlatformAdmin() {
   const cookieStore = await cookies();
   const session = decodeSession(cookieStore.get(SESSION_COOKIE)?.value);
   // UI hiding is presentation — this check is the mock's stand-in for the
-  // real server-side enforcement (invariant 4).
+  // real server-side enforcement (invariant 4). Live-revalidated against the
+  // store, never the cookie snapshot alone (Fable re-review finding 23).
   if (session?.user.role !== "platform-admin") redirect("/");
+  const record = mockDb.users.get(session.user.email);
+  if (!record || record.role !== "platform-admin" || record.status === "inactive" || record.locked) {
+    redirect("/session-expired");
+  }
 }
 
 export async function provisionOrganisationAction(

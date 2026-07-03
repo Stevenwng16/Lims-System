@@ -11,10 +11,20 @@ import {
   BreadcrumbPage,
 } from "@/components/ui/breadcrumb";
 import { Button } from "@/components/ui/button";
+import { decodeSession, SESSION_COOKIE } from "@/lib/auth/session";
+import { getOrgIdByName } from "@/lib/mock-db";
 import { resolveJobActor } from "./actions";
 import { JobOverview } from "./job-overview";
 
-export const metadata = { title: "Jobs — LIMS" };
+// Browser-tab title uses the configured job label (US-C2 AC 2 — Fable
+// re-review finding 15).
+export async function generateMetadata() {
+  const cookieStore = await cookies();
+  const session = decodeSession(cookieStore.get(SESSION_COOKIE)?.value);
+  const orgId = session ? getOrgIdByName(session.user.organisation) : null;
+  const label = orgId ? getOrgSettings(orgId).jobLabel : "Job";
+  return { title: `${label}s — LIMS` };
+}
 
 // US-C2 Job overview — the post-login landing page (US-A3 AC 5). Read-only,
 // scoped to the active lab shown in the shell (AC 1). Switching labs happens in

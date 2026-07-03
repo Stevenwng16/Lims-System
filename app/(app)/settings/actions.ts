@@ -83,11 +83,12 @@ export async function saveBarcodeAction(
   const orgId = await requireAdminOrgId();
   return done(
     await settingsApi.updateBarcode(orgId, {
-      symbology: formData.get("symbology") === "qr" ? "qr" : "code128",
+      symbology: "code128", // QR is a US-C4 "Later" item
       widthMm: Number(formData.get("widthMm")),
       heightMm: Number(formData.get("heightMm")),
+      showCustomer: formData.get("showCustomer") === "on",
+      showSampleType: formData.get("showSampleType") === "on",
       showJobNumber: formData.get("showJobNumber") === "on",
-      showClient: formData.get("showClient") === "on",
       showDate: formData.get("showDate") === "on",
     }),
   );

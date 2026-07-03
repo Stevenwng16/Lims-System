@@ -50,15 +50,20 @@ export async function resolveOrgContext(): Promise<OrgContext> {
   if (!session) redirect("/login");
 
   if (session.user.role !== "platform-admin") {
-    // Live re-validation for org members (finding 4).
+    // Live re-validation for org members (finding 4). Dead sessions go to the
+    // /session-expired route handler, which clears the cookie — a plain
+    // redirect("/login") would loop, since proxy bounces cookie-carrying
+    // requests off /login (Fable re-review finding 1).
     const record = mockDb.users.get(session.user.email);
-    if (!record || record.status === "inactive" || record.locked) redirect("/login");
+    if (!record || record.status === "inactive" || record.locked) redirect("/session-expired");
     // An org member is never a platform-admin; a mismatch means a corrupt
     // session — treat as dead.
-    if (record.role === "platform-admin") redirect("/login");
+    if (record.role === "platform-admin") redirect("/session-expired");
     const liveRole: OrgRole = record.role;
     const orgId = getOrgIdByName(session.user.organisation);
-    if (!orgId || mockDb.organisations.get(orgId)?.status !== "active") redirect("/login");
+    if (!orgId || mockDb.organisations.get(orgId)?.status !== "active") {
+      redirect("/session-expired");
+    }
     return {
       user: { ...session.user, role: liveRole }, // trust the live role
       orgId,
@@ -69,8 +74,18 @@ export async function resolveOrgContext(): Promise<OrgContext> {
     };
   }
 
-  // Platform admin: customer org context exists only via a validated support
-  // session, and never leaks to any other user (finding 6).
+  // Platform admin: live-revalidate the account itself too (Fable re-review
+  // finding 23), then resolve the customer org context only via a validated
+  // support session — it never leaks to any other user (finding 6).
+  const platformRecord = mockDb.users.get(session.user.email);
+  if (
+    !platformRecord ||
+    platformRecord.role !== "platform-admin" ||
+    platformRecord.status === "inactive" ||
+    platformRecord.locked
+  ) {
+    redirect("/session-expired");
+  }
   const support = await validatedSupport(session.user);
   const empty: OrgContext = {
     user: session.user,

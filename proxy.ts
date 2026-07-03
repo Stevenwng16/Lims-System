@@ -8,6 +8,10 @@ const PUBLIC_PATHS = ["/login", "/forgot-password", "/reset-password"];
 
 export function proxy(request: NextRequest) {
   const { pathname } = request.nextUrl;
+  // The dead-session cleaner must pass through untouched: it deletes the
+  // session cookie itself, and the sliding re-issue below must not race that
+  // deletion (Fable re-review finding 1).
+  if (pathname === "/session-expired") return NextResponse.next();
   const session = decodeSession(request.cookies.get(SESSION_COOKIE)?.value);
   const isPublic = PUBLIC_PATHS.some((p) => pathname === p || pathname.startsWith(`${p}/`));
 

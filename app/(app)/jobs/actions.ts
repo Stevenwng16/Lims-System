@@ -39,6 +39,10 @@ function parseJobInput(formData: FormData): JobInput | { parseError: string } {
       notes: String(formData.get("notes") ?? ""),
       storageLocation: String(formData.get("storageLocation") ?? ""),
       samples: samples.map((s) => ({
+        // The id is the edit-mode match key (US-C3 AC 5/12): dropping it made
+        // every edit re-mint ALL sample IDs and destroy their acceptance/
+        // consultation/status records (Fable re-review finding 4 — high).
+        id: typeof s.id === "string" && s.id ? s.id : undefined,
         typeId: s.typeId,
         description: s.description,
         customerSampleRef: s.customerSampleRef,

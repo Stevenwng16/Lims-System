@@ -13,10 +13,13 @@ export async function setActiveLabAction(formData: FormData): Promise<void> {
   if (!session) return;
 
   // Server-side check (invariant 4): only ACTIVE labs the user is assigned to,
-  // validated by id (audit findings 13/33).
+  // validated by id (audit findings 13/33) — and only for a live account in a
+  // live org (Fable re-review finding 24).
   const user = mockDb.users.get(session.user.email);
   const orgId = getOrgIdByName(session.user.organisation);
   if (!user || !orgId) return;
+  if (user.status === "inactive" || user.locked) return;
+  if (mockDb.organisations.get(orgId)?.status !== "active") return;
   if (!activeLabsForUser(user.labs, orgId).some((l) => l.id === labId)) return;
 
   cookieStore.set(LAB_COOKIE, labId, { httpOnly: true, sameSite: "lax", path: "/" });

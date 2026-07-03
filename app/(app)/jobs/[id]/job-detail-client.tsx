@@ -425,6 +425,7 @@ export function JobDetail({
   typeNames,
   methodNames,
   canManage,
+  canPrint,
   status,
   overdue,
   history,
@@ -437,6 +438,7 @@ export function JobDetail({
   typeNames: Record<string, string>;
   methodNames: Record<string, string>;
   canManage: boolean;
+  canPrint: boolean;
   status: JobStatus;
   overdue: boolean;
   history: HistoryEvent[];
@@ -524,9 +526,15 @@ export function JobDetail({
                   + Add sample
                 </Button>
               )}
-              <Button variant="outline" size="sm" disabled title="Barcode printing — US-C4">
-                🖨 Print all
-              </Button>
+              {canPrint && (
+                <Button
+                  variant="outline"
+                  size="sm"
+                  render={<Link href={`/labels/${encodeURIComponent(job.id)}`} />}
+                >
+                  🖨 Print all
+                </Button>
+              )}
             </div>
           </div>
           <div className="overflow-x-auto rounded-lg border bg-card">
@@ -589,9 +597,20 @@ export function JobDetail({
                             </Button>
                           </>
                         )}
-                        <Button variant="ghost" size="xs" disabled title="Barcode printing — US-C4">
-                          🖨
-                        </Button>
+                        {canPrint && !s.voided && (
+                          <Button
+                            variant="ghost"
+                            size="xs"
+                            aria-label={`Print label for ${s.id}`}
+                            render={
+                              <Link
+                                href={`/labels/${encodeURIComponent(job.id)}?sample=${encodeURIComponent(s.id)}`}
+                              />
+                            }
+                          >
+                            🖨
+                          </Button>
+                        )}
                       </div>
                     </TableCell>
                   </TableRow>

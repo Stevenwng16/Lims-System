@@ -57,6 +57,16 @@ export const mockSettingsApi: SettingsApi = {
         identifiers.sequenceReset !== "monthly") {
       return { status: "error", message: "Sequence reset must be never, yearly or monthly." };
     }
+    // Sample sequences restart per job (US-C1 AC 4), so only the {JOB} token
+    // keeps sample IDs unique across jobs — a sample format without it would
+    // mint duplicate IDs org-wide (Fable re-review findings 6/21).
+    if (!/\{JOB\}/.test(identifiers.sampleFormat)) {
+      return {
+        status: "error",
+        message:
+          "Sample number format must contain the {JOB} token — sample sequences restart per job, so the job number is what keeps sample IDs unique.",
+      };
+    }
     // A period reset must be reflected by a period token in the format, or the
     // rendered number repeats every period and reissues IDs (audit finding 9).
     // {JOB} in the sample format carries the job's period, so it is exempt.

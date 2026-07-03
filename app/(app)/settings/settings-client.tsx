@@ -240,16 +240,9 @@ function BarcodeSection({ barcode }: { barcode: OrgSettings["barcode"] }) {
         <form action={submit} className="space-y-4">
           <div className="flex flex-wrap items-end gap-4">
             <div className="space-y-2">
-              <Label htmlFor="symbology">Symbology</Label>
-              <Select name="symbology" defaultValue={barcode.symbology}>
-                <SelectTrigger id="symbology" className="w-40">
-                  <SelectValue />
-                </SelectTrigger>
-                <SelectContent>
-                  <SelectItem value="code128">Code 128</SelectItem>
-                  <SelectItem value="qr">QR</SelectItem>
-                </SelectContent>
-              </Select>
+              <Label>Symbology</Label>
+              <Input value="Code 128" readOnly className="w-40 bg-muted" />
+              <p className="text-xs text-muted-foreground">QR / DataMatrix — later.</p>
             </div>
             <div className="space-y-2">
               <Label htmlFor="widthMm">Width (mm)</Label>
@@ -267,16 +260,20 @@ function BarcodeSection({ barcode }: { barcode: OrgSettings["barcode"] }) {
               Sample ID (human-readable — always printed)
             </label>
             <label className="flex items-center gap-2 text-sm">
-              <Checkbox name="showJobNumber" defaultChecked={barcode.showJobNumber} />
-              Job number
+              <Checkbox name="showCustomer" defaultChecked={barcode.showCustomer} />
+              Customer
             </label>
             <label className="flex items-center gap-2 text-sm">
-              <Checkbox name="showClient" defaultChecked={barcode.showClient} />
-              Client
+              <Checkbox name="showSampleType" defaultChecked={barcode.showSampleType} />
+              Sample type
+            </label>
+            <label className="flex items-center gap-2 text-sm">
+              <Checkbox name="showJobNumber" defaultChecked={barcode.showJobNumber} />
+              Standalone job number
             </label>
             <label className="flex items-center gap-2 text-sm">
               <Checkbox name="showDate" defaultChecked={barcode.showDate} />
-              Registration date
+              Receipt date
             </label>
           </fieldset>
           <SaveRow pending={pending} state={state} />

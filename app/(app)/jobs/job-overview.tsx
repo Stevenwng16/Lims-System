@@ -222,12 +222,10 @@ export function JobOverview({
             {filtered.map((r) => (
               <TableRow
                 key={r.id}
-                role="link"
-                tabIndex={0}
+                // Mouse convenience only — no role="link" (it would destroy the
+                // table's row semantics for assistive tech; the anchor in the
+                // first cell is the accessible/keyboard path).
                 onClick={() => router.push(`/jobs/${r.id}`)}
-                onKeyDown={(e) => {
-                  if (e.key === "Enter") router.push(`/jobs/${r.id}`);
-                }}
                 className={`cursor-pointer ${r.voided ? "opacity-50" : ""}`}
               >
                 <TableCell className="font-mono font-medium">
