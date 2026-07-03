@@ -26,6 +26,20 @@ export type MockOrganisation = {
   supportGrant: SupportGrant | null;
 };
 
+export type MockLab = {
+  id: string;
+  orgId: string; // a lab belongs to exactly one organisation (invariant 5)
+  name: string;
+  code: string; // short code used in IDs/labels; unique within the organisation
+  description: string;
+  status: "active" | "inactive";
+  // Mock counts/flags until methods (US-B1), equipment (US-B3) and jobs/
+  // batches (epics C/D) are real:
+  methodCount: number;
+  equipmentCount: number;
+  hasActiveWork: boolean; // blocks deactivation (US-A5 AC 5)
+};
+
 export type MockUser = SessionUser & {
   orgId: string | null; // null for platform (vendor) staff
   labs: string[]; // lab assignment proper arrives with US-A5/A6
@@ -39,6 +53,7 @@ export type MockUser = SessionUser & {
 export type MockDb = {
   organisations: Map<string, MockOrganisation>;
   users: Map<string, MockUser>;
+  labs: Map<string, MockLab>;
 };
 
 export const DEMO_PASSWORD = "LabDemo2026!!";
@@ -151,8 +166,73 @@ function seedDb(): MockDb {
     mfaRequired: false,
   });
 
-  return { organisations, users };
+  const labs = new Map<string, MockLab>();
+  labs.set("lab-met", {
+    id: "lab-met",
+    orgId: "org-demolab",
+    name: "Metals",
+    code: "MET",
+    description: "Metals analysis, ground floor",
+    status: "active",
+    methodCount: 8,
+    equipmentCount: 15,
+    hasActiveWork: true, // demo: deactivation is blocked (AC 5)
+  });
+  labs.set("lab-wat", {
+    id: "lab-wat",
+    orgId: "org-demolab",
+    name: "Water",
+    code: "WAT",
+    description: "Water & soil testing, 2nd floor",
+    status: "active",
+    methodCount: 4,
+    equipmentCount: 9,
+    hasActiveWork: false, // demo: can be deactivated (and reactivated)
+  });
+  labs.set("lab-ext", {
+    id: "lab-ext",
+    orgId: "org-demolab",
+    name: "External site",
+    code: "EXT",
+    description: "Sampling location Rotterdam",
+    status: "inactive",
+    methodCount: 2,
+    equipmentCount: 4,
+    hasActiveWork: false,
+  });
+  // Seeded default labs of the other organisations (US-A5 AC 8).
+  labs.set("lab-alpha-main", {
+    id: "lab-alpha-main",
+    orgId: "org-labalpha",
+    name: "Main lab",
+    code: "MAIN",
+    description: "",
+    status: "active",
+    methodCount: 3,
+    equipmentCount: 6,
+    hasActiveWork: false,
+  });
+  labs.set("lab-oldcust-main", {
+    id: "lab-oldcust-main",
+    orgId: "org-oldcust",
+    name: "Main lab",
+    code: "MAIN",
+    description: "",
+    status: "active",
+    methodCount: 1,
+    equipmentCount: 2,
+    hasActiveWork: false,
+  });
+
+  return { organisations, users, labs };
 }
 
-export const mockDb: MockDb = ((globalThis as Record<string, unknown>).__limsMockDbV3 ??=
+export const mockDb: MockDb = ((globalThis as Record<string, unknown>).__limsMockDbV4 ??=
   seedDb()) as MockDb;
+
+export function getOrgIdByName(name: string): string | null {
+  for (const org of mockDb.organisations.values()) {
+    if (org.name === name) return org.id;
+  }
+  return null;
+}

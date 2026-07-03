@@ -36,6 +36,19 @@ export const mockPlatformApi: PlatformApi = {
       setupPending: true, // until the invited admin completes setup (AC 4)
       supportGrant: null,
     });
+    // US-A5 AC 8: one default lab is seeded so the organisation is immediately
+    // usable and the last-active-lab rule holds from day one.
+    mockDb.labs.set(`lab-${id}-main`, {
+      id: `lab-${id}-main`,
+      orgId: id,
+      name: "Main lab",
+      code: "MAIN",
+      description: "",
+      status: "active",
+      methodCount: 0,
+      equipmentCount: 0,
+      hasActiveWork: false,
+    });
     console.log(`[mock platform] setup invitation sent to ${adminEmail} for "${trimmed}" (AC 4/5: seeded defaults applied)`);
     return { status: "success" };
   },

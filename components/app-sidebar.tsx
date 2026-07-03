@@ -2,7 +2,7 @@
 
 import Link from "next/link";
 import { usePathname } from "next/navigation";
-import { FlaskConical, Home, Settings, ShieldCheck } from "lucide-react";
+import { Building2, FlaskConical, Home, Settings, ShieldCheck } from "lucide-react";
 import { can, type Capability, type OrgRole } from "@/lib/permissions";
 import {
   Sidebar,
@@ -34,6 +34,7 @@ const mainItems: NavItem[] = [{ title: "Home", href: "/", icon: Home }];
 
 const adminItems: NavItem[] = [
   { title: "Roles & permissions", href: "/admin/roles", icon: ShieldCheck, requires: "org-settings" },
+  { title: "Labs", href: "/admin/labs", icon: Building2, requires: "org-settings" },
   { title: "Settings", href: "/settings/support-access", icon: Settings, requires: "org-settings" },
 ];
 
