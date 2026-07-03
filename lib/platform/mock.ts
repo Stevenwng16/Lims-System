@@ -47,7 +47,6 @@ export const mockPlatformApi: PlatformApi = {
       code: "MAIN",
       description: "",
       status: "active",
-      methodCount: 0,
       equipmentCount: 0,
       hasActiveWork: false,
       analystsMayCreateBatches: false,

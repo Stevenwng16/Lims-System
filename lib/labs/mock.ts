@@ -1,4 +1,4 @@
-import { mockDb, type MockLab } from "@/lib/mock-db";
+import { currentMethodVersion, mockDb, type MockLab } from "@/lib/mock-db";
 import type { LabActionResult, LabApi, LabInput, LabSummary } from "./types";
 
 function orgLabs(orgId: string): MockLab[] {
@@ -12,6 +12,12 @@ function userCount(lab: MockLab): number {
   ).length;
 }
 
+function methodCount(lab: MockLab): number {
+  return [...mockDb.methods.values()].filter(
+    (m) => m.orgId === lab.orgId && currentMethodVersion(m).labId === lab.id,
+  ).length;
+}
+
 function validateInput(orgId: string, input: LabInput, excludeLabId?: string): string | null {
   if (!input.name.trim()) return "Lab name is required.";
   if (!input.code.trim()) return "A short code is required (it is used in IDs and labels).";
@@ -22,12 +28,23 @@ function validateInput(orgId: string, input: LabInput, excludeLabId?: string): s
   // Unique within the organisation only (AC 2) — other organisations may
   // freely use the same code.
   if (clash) return `The code "${code}" is already used by another lab in this organisation.`;
+  // Name uniqueness within the organisation: the mock joins users→labs by
+  // name (see lib/mock-db.ts), so an ambiguous name would corrupt scoping.
+  const name = input.name.trim().toLowerCase();
+  const nameClash = orgLabs(orgId).some(
+    (lab) => lab.id !== excludeLabId && lab.name.trim().toLowerCase() === name,
+  );
+  if (nameClash) return `A lab named "${input.name.trim()}" already exists in this organisation.`;
   return null;
 }
 
 export const mockLabApi: LabApi = {
   async listLabs(orgId): Promise<LabSummary[]> {
-    return orgLabs(orgId).map((lab) => ({ ...lab, userCount: userCount(lab) }));
+    return orgLabs(orgId).map((lab) => ({
+      ...lab,
+      userCount: userCount(lab),
+      methodCount: methodCount(lab),
+    }));
   },
 
   async createLab(orgId, input): Promise<LabActionResult> {
@@ -42,7 +59,6 @@ export const mockLabApi: LabApi = {
       code,
       description: input.description.trim(),
       status: "active",
-      methodCount: 0,
       equipmentCount: 0,
       hasActiveWork: false,
       analystsMayCreateBatches: false,
@@ -58,15 +74,33 @@ export const mockLabApi: LabApi = {
     if (error) return { status: "error", message: error };
     // AC 3: IDs already issued with the old code are never rewritten — the
     // code only affects future IDs/labels (nothing to do in the mock).
-    lab.name = input.name.trim();
+    const oldName = lab.name;
+    const newName = input.name.trim();
+    if (oldName !== newName) {
+      // The mock stores user lab-assignments by NAME — remap them so lab
+      // managers/analysts keep their scope across a rename (found by audit;
+      // the real backend joins by id and needs none of this).
+      for (const user of mockDb.users.values()) {
+        if (user.orgId === orgId) {
+          user.labs = user.labs.map((n) => (n === oldName ? newName : n));
+        }
+      }
+    }
+    lab.name = newName;
     lab.code = input.code.trim().toUpperCase();
     lab.description = input.description.trim();
     return { status: "success" };
   },
 
-  async setLabStatus(orgId, labId, status): Promise<LabActionResult> {
+  async setLabStatus(orgId, labId, status, reason): Promise<LabActionResult> {
     const lab = mockDb.labs.get(labId);
     if (!lab || lab.orgId !== orgId) return { status: "error", message: "Unknown lab." };
+    if (lab.status === status) return { status: "success" }; // no change, no reason needed
+
+    // Invariant 2 (decision 4 Jul 2026): status changes carry a reason.
+    if (!reason.trim()) {
+      return { status: "error", message: "A reason is required to change the lab's status." };
+    }
 
     if (status === "inactive") {
       if (lab.hasActiveWork) {
@@ -88,6 +122,7 @@ export const mockLabApi: LabApi = {
     }
 
     lab.status = status;
+    lab.statusReason = reason.trim();
     return { status: "success" };
   },
 };

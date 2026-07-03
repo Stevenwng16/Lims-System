@@ -77,6 +77,8 @@ function NewLabDialog() {
 
 function EditLabDialog({ lab, onClose }: { lab: LabSummary; onClose: () => void }) {
   const [state, submit, pending] = useActionState(updateLabAction, initialState);
+  const [status, setStatus] = useState<"active" | "inactive">(lab.status);
+  const statusChanged = status !== lab.status;
 
   useEffect(() => {
     if (state.success) onClose();
@@ -117,7 +119,13 @@ function EditLabDialog({ lab, onClose }: { lab: LabSummary; onClose: () => void 
             <legend className="text-sm font-medium">Status</legend>
             <div className="flex gap-6 text-sm">
               <label className="flex items-center gap-2">
-                <input type="radio" name="status" value="active" defaultChecked={lab.status === "active"} />
+                <input
+                  type="radio"
+                  name="status"
+                  value="active"
+                  checked={status === "active"}
+                  onChange={() => setStatus("active")}
+                />
                 Active
               </label>
               <label className="flex items-center gap-2">
@@ -125,11 +133,25 @@ function EditLabDialog({ lab, onClose }: { lab: LabSummary; onClose: () => void 
                   type="radio"
                   name="status"
                   value="inactive"
-                  defaultChecked={lab.status === "inactive"}
+                  checked={status === "inactive"}
+                  onChange={() => setStatus("inactive")}
                 />
                 Inactive
               </label>
             </div>
+            {statusChanged && (
+              <div className="space-y-2">
+                <Label htmlFor="statusReason">
+                  Reason for {status === "inactive" ? "deactivating" : "reactivating"} (required)
+                </Label>
+                <Textarea id="statusReason" name="statusReason" required autoFocus />
+              </div>
+            )}
+            {lab.statusReason && !statusChanged && (
+              <p className="text-xs text-muted-foreground">
+                Last status change: {lab.statusReason}
+              </p>
+            )}
             <p className="text-xs text-muted-foreground">
               Labs are deactivated, never deleted — historical data and links are always retained.
             </p>

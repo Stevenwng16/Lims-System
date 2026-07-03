@@ -1,5 +1,21 @@
-import { DEMO_PASSWORD, mockDb, type MockUser } from "@/lib/mock-db";
+import { currentMethodVersion, DEMO_PASSWORD, mockDb, type MockUser } from "@/lib/mock-db";
 import type { Actor, UserActionResult, UserApi, UserInput, UserListItem } from "./types";
+
+/**
+ * Method ids the actor may grant/revoke: active methods within their scope
+ * (admins: whole organisation; lab managers: own labs). Everything outside
+ * this set must survive a save untouched — US-B1 AC 12: deactivating a
+ * method leaves existing clearance records intact.
+ */
+function grantableMethodIds(actor: Actor): Set<string> {
+  const ids = new Set<string>();
+  for (const method of mockDb.methods.values()) {
+    if (method.orgId !== actor.orgId || method.status !== "active") continue;
+    const labName = mockDb.labs.get(currentMethodVersion(method).labId)?.name ?? "";
+    if (actor.role === "admin" || actor.labs.includes(labName)) ids.add(method.id);
+  }
+  return ids;
+}
 
 function toListItem(u: MockUser): UserListItem {
   return {
@@ -80,7 +96,10 @@ export const mockUserApi: UserApi = {
       role: input.role,
       orgId: actor.orgId,
       labs: input.labs,
-      clearances: input.role === "analyst" ? input.clearances : [],
+      clearances:
+        input.role === "analyst"
+          ? input.clearances.filter((id) => grantableMethodIds(actor).has(id))
+          : [],
       status: "active",
       lastLogin: null,
       // AC 3: the admin never sets or sees a password — the invite flow does.
@@ -143,8 +162,14 @@ export const mockUserApi: UserApi = {
     target.role = input.role;
     target.labs = input.labs;
     // AC 4/5: immediate effect — a revoked clearance blocks further work at
-    // the moment of action (enforced wherever clearances are checked).
-    target.clearances = input.role === "analyst" ? input.clearances : [];
+    // the moment of action. MERGE, never overwrite: the actor can only grant/
+    // revoke within their own scope; clearances for deactivated or
+    // out-of-scope methods are records that must survive intact (US-B1 AC 12),
+    // and a role change away from Analyst leaves them dormant, not destroyed.
+    const grantable = grantableMethodIds(actor);
+    const granted = input.role === "analyst" ? input.clearances.filter((id) => grantable.has(id)) : [];
+    const keptOutOfScope = target.clearances.filter((id) => !grantable.has(id));
+    target.clearances = [...new Set([...granted, ...keptOutOfScope])];
     target.status = input.status;
     return { status: "success" };
   },

@@ -2,7 +2,7 @@
 
 import Link from "next/link";
 import { usePathname } from "next/navigation";
-import { Building2, FlaskConical, Home, Settings, ShieldCheck, Users } from "lucide-react";
+import { Beaker, Building2, FlaskConical, Home, Settings, ShieldCheck, Users } from "lucide-react";
 import { can, type Capability, type OrgRole } from "@/lib/permissions";
 import {
   Sidebar,
@@ -34,7 +34,12 @@ type NavItem = {
   visibleFor?: OrgRole[];
 };
 
-const mainItems: NavItem[] = [{ title: "Home", href: "/", icon: Home }];
+const mainItems: NavItem[] = [
+  { title: "Home", href: "/", icon: Home },
+  // All org roles may view methods (US-B1 authorization); editing is gated
+  // server-side to Admin / Lab manager.
+  { title: "Methods", href: "/methods", icon: Beaker, requires: "view-data" },
+];
 
 const adminItems: NavItem[] = [
   { title: "Roles & permissions", href: "/admin/roles", icon: ShieldCheck, requires: "org-settings" },
