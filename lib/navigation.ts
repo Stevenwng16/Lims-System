@@ -1,4 +1,13 @@
-import { Beaker, Building2, Home, Settings, ShieldCheck, Users, type LucideIcon } from "lucide-react";
+import {
+  Beaker,
+  Building2,
+  ClipboardList,
+  Home,
+  Settings,
+  ShieldCheck,
+  Users,
+  type LucideIcon,
+} from "lucide-react";
 import { can, type Capability, type OrgRole } from "@/lib/permissions";
 
 // Single source of truth for the navigation structure (US-A3 AC 2), shared by
@@ -19,6 +28,7 @@ export type NavItem = {
 
 export const mainNav: NavItem[] = [
   { title: "Home", href: "/", icon: Home },
+  { title: "Jobs", href: "/jobs", icon: ClipboardList, requires: "view-data" },
   { title: "Methods", href: "/methods", icon: Beaker, requires: "view-data" },
 ];
 

@@ -57,6 +57,31 @@ export const mockSettingsApi: SettingsApi = {
         identifiers.sequenceReset !== "monthly") {
       return { status: "error", message: "Sequence reset must be never, yearly or monthly." };
     }
+    // A period reset must be reflected by a period token in the format, or the
+    // rendered number repeats every period and reissues IDs (audit finding 9).
+    // {JOB} in the sample format carries the job's period, so it is exempt.
+    if (identifiers.sequenceReset === "monthly") {
+      for (const [label, template, isSample] of templates) {
+        if (isSample && /\{JOB\}/.test(template)) continue;
+        if (!/\{MM\}/.test(template)) {
+          return {
+            status: "error",
+            message: `${label}: a monthly sequence reset needs a {MM} token, otherwise numbers repeat every month.`,
+          };
+        }
+      }
+    }
+    if (identifiers.sequenceReset === "yearly") {
+      for (const [label, template, isSample] of templates) {
+        if (isSample && /\{JOB\}/.test(template)) continue;
+        if (!/\{YY\}|\{YYYY\}/.test(template)) {
+          return {
+            status: "error",
+            message: `${label}: a yearly sequence reset needs a {YY} or {YYYY} token, otherwise numbers repeat every year.`,
+          };
+        }
+      }
+    }
     if (!jobLabel.trim()) return { status: "error", message: "The job label cannot be empty." };
     const settings = getOrgSettings(orgId);
     // AC 4: only future IDs are affected — nothing existing is ever rewritten.

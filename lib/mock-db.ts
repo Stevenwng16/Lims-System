@@ -188,12 +188,93 @@ export function currentMethodVersion(method: MockMethod): MethodVersion {
   return method.versions[method.versions.length - 1];
 }
 
+// Jobs & samples (US-C1). A job belongs to exactly one lab within one
+// organisation (invariant 5). Job numbers and sample IDs are generated from the
+// US-A7 templates, unique within the organisation, and NEVER changed or
+// reissued (AC 2/4). Records are voided with a reason, never deleted (AC 13).
+
+export type Attachment = {
+  id: string;
+  fileName: string;
+  sizeBytes: number;
+  sha256: string; // real checksum over the bytes (ADR-3)
+  uploadedAt: string;
+  uploadedBy: string;
+};
+
+export type CustomerConsultation = {
+  who: string;
+  when: string;
+  outcome: string;
+  recordedBy: string;
+  recordedAt: string;
+};
+
+export type SampleAcceptance = "accepted" | "accepted-with-reservation" | "rejected";
+
+// A deviation's TYPE drives whether a customer consultation is forced (AC 8):
+// only "mismatch" (does not match description / suitability in doubt) forces it.
+export type DeviationType = "none" | "cosmetic" | "mismatch";
+
+// Sample lifecycle status (US-C1 AC 9): originates here — starts at "received"
+// on acceptance; epic D owns the transitions beyond it. null = no decision yet
+// (a rejected sample never enters the lifecycle, so it stays null).
+export type SampleLifecycleStatus = "received" | "in-batch" | "in-progress" | "completed";
+
+export type MockSample = {
+  id: string; // immutable sample ID (AC 4)
+  jobId: string;
+  typeId: string; // org sample-type list-item ID (US-A7 AC 9) — stable across renames
+  description: string;
+  customerSampleRef: string;
+  quantity: string; // decimal STRING, never a float (CLAUDE.md hard rule)
+  quantityUnit: string;
+  requestedMethodIds: string[]; // defaults from the job, overridable (AC 5)
+  condition: "conforming" | "deviation"; // §7.4 (AC 6)
+  deviationType: DeviationType;
+  deviationNote: string;
+  attachments: Attachment[]; // optional deviation evidence (AC 6)
+  acceptance: SampleAcceptance | null; // §7.4.3 hard gate (AC 7); null = awaiting decision
+  reservationReason: string; // required when accepted-with-reservation
+  consultation: CustomerConsultation | null; // §7.4.3 (AC 8)
+  status: SampleLifecycleStatus | null; // AC 9 — "received" on acceptance; epic D advances it
+  storageLocation: string; // §7.4.1 hook (AC 10)
+  voided: boolean;
+  voidReason?: string;
+  createdAt: string;
+};
+
+export type MockJob = {
+  id: string; // the job number (AC 2) — immutable
+  orgId: string;
+  labId: string;
+  customer: string;
+  customerRef: string;
+  receivedAt: string; // date + time of receipt (AC 1)
+  receivedBy: string; // auto: the registering user
+  requestedMethodIds: string[];
+  priority: string;
+  dueDate: string;
+  notes: string;
+  storageLocation: string;
+  voided: boolean;
+  voidReason?: string;
+  createdAt: string;
+  createdBy: string;
+  samples: MockSample[];
+};
+
 export type MockDb = {
   organisations: Map<string, MockOrganisation>;
   users: Map<string, MockUser>;
   labs: Map<string, MockLab>;
   orgSettings: Map<string, OrgSettings>;
   methods: Map<string, MockMethod>;
+  jobs: Map<string, MockJob>;
+  // Per-org+per-lab+period job counters and per-job sample counters (US-A7 AC 3
+  // sequence isolation). Key formats: "job:<orgId>:<labId>:<period>" and
+  // "sample:<orgId>:<jobNumber>". Both org-scoped so tenants never couple.
+  sequences: Map<string, number>;
 };
 
 export const DEMO_PASSWORD = "LabDemo2026!!";
@@ -501,10 +582,82 @@ function seedDb(): MockDb {
     ],
   });
 
-  return { organisations, users, labs, orgSettings, methods };
+  // Seed one example job (US-C1) so the list/detail have content. Sample types
+  // reference the org's seeded sample-type list ids (st-1 Water, st-2 Soil).
+  const jobs = new Map<string, MockJob>();
+  const sequences = new Map<string, number>();
+  const sample = (
+    id: string,
+    typeId: string,
+    description: string,
+    extra: Partial<MockSample>,
+  ): MockSample => ({
+    id,
+    jobId: "MET26-00001",
+    typeId,
+    description,
+    customerSampleRef: "",
+    quantity: "",
+    quantityUnit: "",
+    requestedMethodIds: ["m-icpms"],
+    condition: "conforming",
+    deviationType: "none",
+    deviationNote: "",
+    attachments: [],
+    acceptance: null,
+    reservationReason: "",
+    consultation: null,
+    status: null,
+    storageLocation: "",
+    voided: false,
+    createdAt: "9 Jun 2026",
+    ...extra,
+  });
+  // Map key is org-composite for tenant isolation (audit findings 1/8/12); the
+  // visible id stays the human-readable, org-unique job number.
+  jobs.set("org-demolab:MET26-00001", {
+    id: "MET26-00001",
+    orgId: "org-demolab",
+    labId: "lab-met",
+    customer: "Aqualab Noord",
+    customerRef: "PO-7781",
+    receivedAt: "2026-06-09T14:20",
+    receivedBy: "labmanager@demolab.nl",
+    requestedMethodIds: ["m-icpms"],
+    priority: "Standard",
+    dueDate: "",
+    notes: "",
+    storageLocation: "Fridge A, shelf 2",
+    voided: false,
+    createdAt: "9 Jun 2026",
+    createdBy: "labmanager@demolab.nl",
+    samples: [
+      sample("MET26-00001.001", "st-1", "Inlet", { acceptance: "accepted", status: "received" }),
+      sample("MET26-00001.002", "st-1", "Outlet", {
+        condition: "deviation",
+        deviationType: "cosmetic",
+        deviationNote: "Leaking cap",
+        acceptance: "accepted-with-reservation",
+        reservationReason: "Minor leakage on receipt; result may be affected.",
+        status: "received",
+      }),
+      sample("MET26-00001.003", "st-2", "Bank sediment", {
+        condition: "deviation",
+        deviationType: "mismatch",
+        deviationNote: "Labelled as water but appears to be sediment",
+        // Awaiting decision: a mismatch forces a consultation before acceptance.
+      }),
+    ],
+  });
+  // Counters consistent with the seed: job MET/2026 used 1; sample seq for this
+  // job used 3 (yearly reset is the default). Sample key is org-scoped.
+  sequences.set("job:org-demolab:lab-met:2026", 1);
+  sequences.set("sample:org-demolab:MET26-00001", 3);
+
+  return { organisations, users, labs, orgSettings, methods, jobs, sequences };
 }
 
-export const mockDb: MockDb = ((globalThis as Record<string, unknown>).__limsMockDbV9 ??=
+export const mockDb: MockDb = ((globalThis as Record<string, unknown>).__limsMockDbV11 ??=
   seedDb()) as MockDb;
 
 export function getOrgSettings(orgId: string): OrgSettings {
