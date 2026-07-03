@@ -4,6 +4,7 @@ import { cookies } from "next/headers";
 import { logoutAction } from "./(auth)/actions";
 import { decodeSession, SESSION_COOKIE } from "@/lib/auth/session";
 import { Button } from "@/components/ui/button";
+import { ThemeToggle } from "@/components/theme-toggle";
 
 const stats = [
   { label: "Open jobs", value: 14, hint: "3 due this week" },
@@ -37,7 +38,7 @@ export default async function Home() {
       <header className="border-b border-zinc-200 bg-white dark:border-zinc-800 dark:bg-zinc-900">
         <div className="mx-auto flex max-w-6xl items-center justify-between px-6 py-4">
           <div className="flex items-baseline gap-3">
-            <span className="text-lg font-semibold tracking-tight text-zinc-900 dark:text-zinc-100">
+            <span className="text-lg font-semibold tracking-tight text-primary">
               LIMS
             </span>
             <span className="text-sm text-zinc-500 dark:text-zinc-400">
@@ -48,6 +49,7 @@ export default async function Home() {
             <span className="rounded-full border border-dashed border-zinc-300 px-3 py-1 text-xs text-zinc-500 dark:border-zinc-700 dark:text-zinc-400">
               Placeholder — mock data
             </span>
+            <ThemeToggle />
             {session && (
               <>
                 <span className="text-sm text-zinc-600 dark:text-zinc-300">
