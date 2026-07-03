@@ -28,6 +28,7 @@ export type MockOrganisation = {
 
 export type MockUser = SessionUser & {
   orgId: string | null; // null for platform (vendor) staff
+  labs: string[]; // lab assignment proper arrives with US-A5/A6
   password: string;
   mfaRequired: boolean;
   failedAttempts: number;
@@ -89,6 +90,7 @@ function seedDb(): MockDb {
     organisation: "Demo Lab",
     role: "org-admin",
     orgId: "org-demolab",
+    labs: ["Metals", "Water"], // two labs → lab switcher visible (US-A3 AC 4)
     mfaRequired: false,
   });
   users.set("analyst@demolab.nl", {
@@ -98,6 +100,7 @@ function seedDb(): MockDb {
     organisation: "Demo Lab",
     role: "org-member",
     orgId: "org-demolab",
+    labs: ["Metals"], // one lab → name only, no switcher
     mfaRequired: true,
   });
   users.set("user@oldcust.nl", {
@@ -107,6 +110,7 @@ function seedDb(): MockDb {
     organisation: "OldCust BV",
     role: "org-member",
     orgId: "org-oldcust",
+    labs: ["General"],
     mfaRequired: false,
   });
   users.set("vendor@lims.dev", {
@@ -116,6 +120,7 @@ function seedDb(): MockDb {
     organisation: "LIMS Platform",
     role: "platform-admin",
     orgId: null,
+    labs: [],
     mfaRequired: false,
   });
 
