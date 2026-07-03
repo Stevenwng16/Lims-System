@@ -1,0 +1,78 @@
+# Supabase project configuration — deployed with `supabase config push`.
+# This file is the source of truth for auth settings; no dashboard clickops.
+# Values referencing env(...) are read from the environment at push time.
+
+project_id = "lims"
+
+[api]
+enabled = true
+port = 54321
+schemas = ["public"]
+max_rows = 1000
+
+[db]
+port = 54322
+major_version = 17
+
+[auth]
+enabled = true
+# AC 10 / frontend URLs — reset links must land on our app
+site_url = "env(SITE_URL)"
+additional_redirect_urls = ["env(RESET_REDIRECT_URL)"]
+
+# AC 8: short access tokens so the proxy controls inactivity timeout (600 s)
+jwt_expiry = 600
+enable_refresh_token_rotation = true
+
+# AC 1 / AC 11: no self-signup — users are created by provisioning / org admins
+enable_signup = false
+enable_anonymous_sign_ins = false
+
+# AC 4 backstop: project-wide floor; per-org policy enforced in the proxy
+minimum_password_length = 12
+password_requirements = "lower_upper_letters_digits"
+
+[auth.email]
+enable_signup = false
+enable_confirmations = false
+double_confirm_changes = true
+# AC 6: reset-link lifetime (seconds)
+otp_expiry = 3600
+
+# Production SMTP (AC 6 — Supabase built-in mailer is dev-only)
+[auth.email.smtp]
+enabled = true
+host = "env(SMTP_HOST)"
+port = 587
+user = "env(SMTP_USER)"
+pass = "env(SMTP_PASS)"
+admin_email = "env(SMTP_ADMIN_EMAIL)"
+sender_name = "LIMS"
+
+# Branded email templates (kept in repo)
+[auth.email.template.recovery]
+subject = "Reset your LIMS password"
+content_path = "./supabase/templates/recovery.html"
+
+[auth.email.template.invite]
+subject = "You have been invited to LIMS"
+content_path = "./supabase/templates/invite.html"
+
+# AC 5: TOTP MFA only — no SMS, no social providers
+[auth.mfa]
+max_enrolled_factors = 2
+
+[auth.mfa.totp]
+enroll_enabled = true
+verify_enabled = true
+
+[auth.mfa.phone]
+enroll_enabled = false
+verify_enabled = false
+
+# AC 13: custom access token hook injects app_org_id / app_role claims
+[auth.hook.custom_access_token]
+enabled = true
+uri = "pg-functions://postgres/public/custom_access_token_hook"
+
+# No external OAuth providers (SSO added later per AC 12 via SAML, separate config)
