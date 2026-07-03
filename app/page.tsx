@@ -34,7 +34,7 @@ export default function Home() {
               LIMS
             </span>
             <span className="text-sm text-zinc-500 dark:text-zinc-400">
-              Demo Lab · Amsterdam
+              Demo Lab · Schiedam
             </span>
           </div>
           <span className="rounded-full border border-dashed border-zinc-300 px-3 py-1 text-xs text-zinc-500 dark:border-zinc-700 dark:text-zinc-400">
