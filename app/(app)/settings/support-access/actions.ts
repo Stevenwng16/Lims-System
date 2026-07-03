@@ -5,19 +5,29 @@ import { cookies } from "next/headers";
 import { redirect } from "next/navigation";
 import { platformApi } from "@/lib/platform";
 import { decodeSession, SESSION_COOKIE } from "@/lib/auth/session";
+import { getOrgIdByName, mockDb } from "@/lib/mock-db";
 
 export type SupportAccessFormState = { error?: string; success?: boolean };
 
+const ALLOWED_DURATIONS = [24, 72, 168];
+
 // Mock stand-in for real server-side enforcement (invariant 4): only the
-// organisation's own Admin manages its support grants (US-A2 AC 8). Grant
+// organisation's own live Admin manages its support grants (US-A2 AC 8). Grant
 // management is deliberately NOT reachable through a support session — the
-// customer decides who gets in, never the vendor.
-async function requireOrgAdmin(): Promise<string> {
+// customer decides who gets in, never the vendor. Works for ANY organisation,
+// not just Demo Lab (audit finding 7).
+export async function requireOrgAdmin(): Promise<string> {
   const cookieStore = await cookies();
   const session = decodeSession(cookieStore.get(SESSION_COOKIE)?.value);
-  if (session?.user.role !== "admin") redirect("/");
-  // Mock: resolve the org id from the organisation name in the session.
-  return session.user.organisation === "Demo Lab" ? "org-demolab" : "org-unknown";
+  if (!session) redirect("/login");
+  // Live re-validation — a demoted/deactivated admin cannot manage grants.
+  const record = mockDb.users.get(session.user.email);
+  if (!record || record.role !== "admin" || record.status === "inactive" || record.locked) {
+    redirect("/");
+  }
+  const orgId = getOrgIdByName(session.user.organisation);
+  if (!orgId) redirect("/");
+  return orgId;
 }
 
 export async function grantSupportAccessAction(
@@ -26,6 +36,9 @@ export async function grantSupportAccessAction(
 ): Promise<SupportAccessFormState> {
   const orgId = await requireOrgAdmin();
   const durationHours = Number(formData.get("duration") ?? 72);
+  if (!ALLOWED_DURATIONS.includes(durationHours)) {
+    return { error: "Choose a valid duration (24, 72 or 168 hours)." };
+  }
   const allowAdmin = formData.get("allowAdmin") === "on";
   const result = await platformApi.grantSupportAccess(orgId, durationHours, allowAdmin);
   if (result.status === "error") return { error: result.message };

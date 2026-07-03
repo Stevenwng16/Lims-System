@@ -1,27 +1,19 @@
 "use server";
 
 import { revalidatePath } from "next/cache";
-import { cookies } from "next/headers";
 import { redirect } from "next/navigation";
 import { settingsApi } from "@/lib/settings";
-import { decodeSession, SESSION_COOKIE } from "@/lib/auth/session";
-import { decodeSupportSession, SUPPORT_COOKIE } from "@/lib/platform/support-session";
-import { effectiveOrgRole } from "@/lib/permissions";
-import { getOrgIdByName } from "@/lib/mock-db";
+import { resolveOrgContext } from "@/lib/auth/context";
 
 export type SettingsFormState = { error?: string; success?: boolean };
 
-// Settings are Admin-only (US-A7 authorization). Mock stand-in for the real
-// server-side enforcement (invariant 4).
+// Settings are Admin-only (US-A7 authorization). Live-validated via the shared
+// resolver, which also gates the org context to the session's real tenant
+// (audit findings 4/6).
 export async function requireAdminOrgId(): Promise<string> {
-  const cookieStore = await cookies();
-  const session = decodeSession(cookieStore.get(SESSION_COOKIE)?.value);
-  if (!session) redirect("/login");
-  const supportSession = decodeSupportSession(cookieStore.get(SUPPORT_COOKIE)?.value);
-  if (effectiveOrgRole(session.user, supportSession) !== "admin") redirect("/");
-  const orgId = supportSession?.orgId ?? getOrgIdByName(session.user.organisation);
-  if (!orgId) redirect("/");
-  return orgId;
+  const ctx = await resolveOrgContext();
+  if (ctx.role !== "admin" || !ctx.orgId) redirect("/");
+  return ctx.orgId;
 }
 
 function done(result: { status: "success" } | { status: "error"; message: string }): SettingsFormState {

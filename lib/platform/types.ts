@@ -3,7 +3,12 @@ import type { MockOrganisation } from "@/lib/mock-db";
 // Vendor/tenant operations of US-A2. Like AuthApi, this is the swap surface:
 // the mock lives in mock.ts, the real backend replaces it as an adapter.
 
-export type OrganisationSummary = MockOrganisation;
+// userCount derived live in listOrganisations; sessionActive derived from the
+// grant's sessionExpiresAt so the console never shows a stale "active" flag.
+export type OrganisationSummary = MockOrganisation & {
+  userCount: number;
+  supportSessionActive: boolean;
+};
 
 export type ActionResult = { status: "success" } | { status: "error"; message: string };
 
@@ -21,7 +26,10 @@ export interface PlatformApi {
   grantSupportAccess(orgId: string, durationHours: number, allowAdmin: boolean): Promise<ActionResult>;
   revokeSupportAccess(orgId: string): Promise<ActionResult>;
 
-  /** Vendor side (AC 9): only with an active grant. */
-  openSupportSession(orgId: string): Promise<ActionResult & { orgName?: string; allowAdmin?: boolean }>;
+  /** Vendor side (AC 9): only with an active grant. Returns the grant expiry so
+   * the session cookie can be capped to it (audit finding 5). */
+  openSupportSession(
+    orgId: string,
+  ): Promise<ActionResult & { orgName?: string; allowAdmin?: boolean; grantExpiresAt?: number }>;
   endSupportSession(orgId: string): Promise<ActionResult>;
 }

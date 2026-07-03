@@ -287,7 +287,11 @@ export function UsersClient({
   actorRole,
   actorEmail,
 }: Props) {
-  const [editing, setEditing] = useState<UserListItem | null>(null);
+  // Track only the identity and derive the row from fresh props, so the open
+  // dialog stays in sync with revalidated data — e.g. after Unlock the "locked"
+  // badge and Unlock button disappear (audit finding 31).
+  const [editingEmail, setEditingEmail] = useState<string | null>(null);
+  const editing = editingEmail ? (users.find((u) => u.email === editingEmail) ?? null) : null;
 
   return (
     <>
@@ -340,7 +344,7 @@ export function UsersClient({
                 </TableCell>
                 <TableCell className="text-muted-foreground">{user.lastLogin ?? "—"}</TableCell>
                 <TableCell className="text-right">
-                  <Button variant="ghost" size="xs" onClick={() => setEditing(user)}>
+                  <Button variant="ghost" size="xs" onClick={() => setEditingEmail(user.email)}>
                     Edit
                   </Button>
                 </TableCell>
@@ -352,8 +356,9 @@ export function UsersClient({
 
       {editing && (
         <EditUserDialog
+          key={`${editing.email}-${editing.locked}-${editing.status}`}
           user={editing}
-          onClose={() => setEditing(null)}
+          onClose={() => setEditingEmail(null)}
           assignableLabs={assignableLabs}
           methods={methods}
           methodLabels={methodLabels}

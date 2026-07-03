@@ -293,8 +293,27 @@ type LabSettingsRow = {
   reviewerMustDiffer: boolean;
 };
 
-function LabSettingsSection({ labs }: { labs: LabSettingsRow[] }) {
+// The form + its action state live in a keyed child, so switching labs resets
+// the "Saved." / error message along with the checkboxes (audit finding 30).
+function LabSettingsForm({ lab }: { lab: LabSettingsRow }) {
   const [state, submit, pending] = useActionState(saveLabSettingsAction, initialState);
+  return (
+    <form action={submit} className="space-y-3">
+      <input type="hidden" name="labId" value={lab.id} />
+      <label className="flex items-center gap-2 text-sm">
+        <Checkbox name="analystsMayCreateBatches" defaultChecked={lab.analystsMayCreateBatches} />
+        Analysts may create batches (cleared methods only)
+      </label>
+      <label className="flex items-center gap-2 text-sm">
+        <Checkbox name="reviewerMustDiffer" defaultChecked={lab.reviewerMustDiffer} />
+        Reviewer must differ from the performing analyst(s)
+      </label>
+      <SaveRow pending={pending} state={state} />
+    </form>
+  );
+}
+
+function LabSettingsSection({ labs }: { labs: LabSettingsRow[] }) {
   const [selectedId, setSelectedId] = useState(labs[0]?.id ?? "");
   const selected = labs.find((lab) => lab.id === selectedId);
 
@@ -322,21 +341,7 @@ function LabSettingsSection({ labs }: { labs: LabSettingsRow[] }) {
             </SelectContent>
           </Select>
         </div>
-        <form action={submit} className="space-y-3" key={selected.id}>
-          <input type="hidden" name="labId" value={selected.id} />
-          <label className="flex items-center gap-2 text-sm">
-            <Checkbox
-              name="analystsMayCreateBatches"
-              defaultChecked={selected.analystsMayCreateBatches}
-            />
-            Analysts may create batches (cleared methods only)
-          </label>
-          <label className="flex items-center gap-2 text-sm">
-            <Checkbox name="reviewerMustDiffer" defaultChecked={selected.reviewerMustDiffer} />
-            Reviewer must differ from the performing analyst(s)
-          </label>
-          <SaveRow pending={pending} state={state} />
-        </form>
+        <LabSettingsForm key={selected.id} lab={selected} />
       </CardContent>
     </Card>
   );

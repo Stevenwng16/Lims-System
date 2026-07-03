@@ -1,4 +1,4 @@
-import { DEMO_PASSWORD, getOrgSettings, mockDb } from "@/lib/mock-db";
+import { DEMO_PASSWORD, defaultOrgSettings, getOrgSettings, mockDb } from "@/lib/mock-db";
 import type { AuthApi, LoginResult, MfaResult, ResetResult, SessionUser } from "./types";
 import type { MockUser } from "@/lib/mock-db";
 
@@ -13,11 +13,22 @@ import type { MockUser } from "@/lib/mock-db";
 
 const DEMO_MFA_CODE = "123456";
 const DEMO_RESET_TOKEN = "demo-reset-token";
+const MFA_TOKEN_TTL_MS = 5 * 60 * 1000;
 
-// Security policy comes from the organisation's settings (US-A7 AC 2,
-// enforced here per US-A1 AC 4/5/7). Platform staff fall back to defaults.
+// Pending second-factor state (US-A1 AC 5): created ONLY after a password
+// succeeds and all login gates pass, so the MFA step is a continuation of an
+// authenticated attempt — never a standalone entry point. Opaque, single-use,
+// time-limited token (audit finding).
+type PendingMfa = { email: string; expiresAt: number };
+const pendingMfa: Map<string, PendingMfa> = ((globalThis as Record<string, unknown>)
+  .__limsPendingMfa ??= new Map()) as Map<string, PendingMfa>;
+
+// Security policy comes from the organisation's settings (US-A7 AC 2, enforced
+// here per US-A1 AC 4/5/7). Platform staff (no org) use fixed defaults — never
+// one tenant's live, customer-editable settings (audit finding).
 function securityPolicy(user: MockUser | undefined) {
-  return getOrgSettings(user?.orgId ?? "org-demolab").security;
+  if (!user?.orgId) return defaultOrgSettings().security;
+  return getOrgSettings(user.orgId).security;
 }
 
 function toSessionUser(u: MockUser): SessionUser {
@@ -29,36 +40,63 @@ function orgSuspended(user: MockUser): boolean {
   return mockDb.organisations.get(user.orgId)?.status !== "active";
 }
 
+function stampLogin(user: MockUser) {
+  user.lastLogin = new Date().toLocaleDateString("en-GB", { day: "numeric", month: "short", year: "numeric" });
+}
+
+function registerFailure(user: MockUser) {
+  if (user.locked) return;
+  user.failedAttempts += 1;
+  if (user.failedAttempts >= securityPolicy(user).lockoutThreshold) user.locked = true;
+}
+
 export const mockAuthApi: AuthApi = {
   async login(email, password): Promise<LoginResult> {
     const user = mockDb.users.get(email.trim().toLowerCase());
     if (!user) return { status: "invalid" };
-    if (user.locked) return { status: "locked" };
+    // Verify the password BEFORE revealing any account state, so a prober with
+    // guessed passwords can never learn whether an account exists or is locked
+    // (US-A1 AC 3 — audit finding).
     if (user.password !== password) {
-      user.failedAttempts += 1;
-      if (user.failedAttempts >= securityPolicy(user).lockoutThreshold) user.locked = true;
-      return user.locked ? { status: "locked" } : { status: "invalid" };
+      registerFailure(user);
+      return { status: "invalid" };
     }
-    user.failedAttempts = 0;
-    // Deactivated users can no longer log in (US-A6 AC 6) — same generic
-    // message as a wrong password, nothing to probe.
+    // Password is correct from here — now the caller may learn account state.
+    if (user.locked) return { status: "locked" };
+    // Deactivated users can no longer log in (US-A6 AC 6).
     if (user.status === "inactive") return { status: "invalid" };
-    // Only after successful authentication, so the message can't be used to
-    // probe org status with guessed passwords (US-A2 AC 6).
     if (orgSuspended(user)) return { status: "org-suspended" };
+    user.failedAttempts = 0;
     // MFA applies per user OR organisation-wide (US-A1 AC 5 / US-A7 AC 2).
     if (user.mfaRequired || (user.orgId && securityPolicy(user).requireMfa)) {
-      return { status: "mfa_required", mfaToken: `mfa:${user.email}` };
+      const token = crypto.randomUUID();
+      pendingMfa.set(token, { email: user.email, expiresAt: Date.now() + MFA_TOKEN_TTL_MS });
+      return { status: "mfa_required", mfaToken: token };
     }
-    user.lastLogin = new Date().toLocaleDateString("en-GB", { day: "numeric", month: "short", year: "numeric" });
+    stampLogin(user);
     return { status: "success", user: toSessionUser(user) };
   },
 
   async verifyMfa(mfaToken, code): Promise<MfaResult> {
-    const email = mfaToken.startsWith("mfa:") ? mfaToken.slice(4) : "";
-    const user = mockDb.users.get(email);
-    if (!user || code !== DEMO_MFA_CODE) return { status: "invalid" };
-    user.lastLogin = new Date().toLocaleDateString("en-GB", { day: "numeric", month: "short", year: "numeric" });
+    const pending = pendingMfa.get(mfaToken);
+    if (!pending || pending.expiresAt < Date.now()) {
+      pendingMfa.delete(mfaToken);
+      return { status: "invalid" };
+    }
+    const user = mockDb.users.get(pending.email);
+    // Re-apply the login gates: state may have changed between the two steps.
+    if (!user || user.locked || user.status === "inactive" || orgSuspended(user)) {
+      pendingMfa.delete(mfaToken);
+      return { status: "invalid" };
+    }
+    if (code !== DEMO_MFA_CODE) {
+      // The second factor is subject to the AC 7 lockout too (audit finding).
+      registerFailure(user);
+      return { status: "invalid" };
+    }
+    pendingMfa.delete(mfaToken); // single-use
+    user.failedAttempts = 0;
+    stampLogin(user);
     return { status: "success", user: toSessionUser(user) };
   },
 

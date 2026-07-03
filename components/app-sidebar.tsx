@@ -2,8 +2,9 @@
 
 import Link from "next/link";
 import { usePathname } from "next/navigation";
-import { Beaker, Building2, FlaskConical, Home, Settings, ShieldCheck, Users } from "lucide-react";
-import { can, type Capability, type OrgRole } from "@/lib/permissions";
+import { FlaskConical } from "lucide-react";
+import type { OrgRole } from "@/lib/permissions";
+import { adminNav, isActiveNav, mainNav, visibleNav } from "@/lib/navigation";
 import {
   Sidebar,
   SidebarContent,
@@ -17,49 +18,13 @@ import {
   SidebarRail,
 } from "@/components/ui/sidebar";
 
-// US-A3 AC 2: the target structure is Jobs / Batches / Quality / Methods /
-// Reports / Admin — items appear only once their feature exists, so the
-// phase-1 sidebar is small and grows per story without layout rework.
-// Visibility follows the US-A4 capability matrix (AC 12) and is presentation
-// only — the server enforces the same matrix.
-
-type NavItem = {
-  title: string;
-  href: string;
-  icon: typeof Home;
-  requires?: Capability;
-  // For items whose access is scoped rather than matrix-flat (US-A6: lab
-  // managers manage Analyst/Read-only users within their own labs, even
-  // though the coarse "Manage users" matrix row is Admin-only).
-  visibleFor?: OrgRole[];
-};
-
-const mainItems: NavItem[] = [
-  { title: "Home", href: "/", icon: Home },
-  // All org roles may view methods (US-B1 authorization); editing is gated
-  // server-side to Admin / Lab manager.
-  { title: "Methods", href: "/methods", icon: Beaker, requires: "view-data" },
-];
-
-const adminItems: NavItem[] = [
-  { title: "Roles & permissions", href: "/admin/roles", icon: ShieldCheck, requires: "org-settings" },
-  { title: "Users", href: "/admin/users", icon: Users, visibleFor: ["admin", "lab-manager"] },
-  { title: "Labs", href: "/admin/labs", icon: Building2, requires: "org-settings" },
-  { title: "Settings", href: "/settings", icon: Settings, requires: "org-settings" },
-];
-
-function visible(items: NavItem[], role: OrgRole | null): NavItem[] {
-  return items.filter((item) => {
-    if (role === null) return !item.requires && !item.visibleFor;
-    if (item.visibleFor) return item.visibleFor.includes(role);
-    if (item.requires) return can(role, item.requires);
-    return true;
-  });
-}
-
+// The sidebar renders the shared navigation config (lib/navigation.ts). US-A3
+// AC 2: sections appear only once their feature exists; visibility follows the
+// US-A4 capability matrix (AC 12) and is presentation only — the server
+// enforces the same matrix.
 export function AppSidebar({ role }: { role: OrgRole | null }) {
   const pathname = usePathname();
-  const admin = visible(adminItems, role);
+  const admin = visibleNav(adminNav, role);
 
   return (
     <Sidebar collapsible="icon">
@@ -75,10 +40,10 @@ export function AppSidebar({ role }: { role: OrgRole | null }) {
         <SidebarGroup>
           <SidebarGroupContent>
             <SidebarMenu>
-              {visible(mainItems, role).map((item) => (
+              {visibleNav(mainNav, role).map((item) => (
                 <SidebarMenuItem key={item.href}>
                   <SidebarMenuButton
-                    isActive={pathname === item.href}
+                    isActive={isActiveNav(item.href, pathname)}
                     tooltip={item.title}
                     render={<Link href={item.href} />}
                   >
@@ -98,7 +63,7 @@ export function AppSidebar({ role }: { role: OrgRole | null }) {
                 {admin.map((item) => (
                   <SidebarMenuItem key={item.href}>
                     <SidebarMenuButton
-                      isActive={pathname.startsWith(item.href)}
+                      isActive={isActiveNav(item.href, pathname)}
                       tooltip={item.title}
                       render={<Link href={item.href} />}
                     >

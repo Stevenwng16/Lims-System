@@ -22,6 +22,14 @@ export interface LabApi {
   createLab(orgId: string, input: LabInput): Promise<LabActionResult>;
   /** AC 3: editing never rewrites codes already embedded in issued IDs. */
   updateLab(orgId: string, labId: string, input: LabInput): Promise<LabActionResult>;
+  /** Guard-only validation of a status change (no mutation) so a combined
+   * Save can check it before committing field edits (audit finding 20). */
+  checkLabStatusChange(
+    orgId: string,
+    labId: string,
+    status: "active" | "inactive",
+    reason: string,
+  ): Promise<LabActionResult>;
   /** AC 4/5/7: deactivate (never delete), blocked on active work / last active
    * lab. A status CHANGE requires a reason (invariant 2; decision 4 Jul 2026). */
   setLabStatus(

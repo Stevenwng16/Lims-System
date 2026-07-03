@@ -22,6 +22,12 @@ function validateInput(orgId: string, input: LabInput, excludeLabId?: string): s
   if (!input.name.trim()) return "Lab name is required.";
   if (!input.code.trim()) return "A short code is required (it is used in IDs and labels).";
   const code = input.code.trim().toUpperCase();
+  // The code becomes part of generated identifiers (AC 2), so constrain it
+  // server-side, not just via the client maxLength (audit finding 21).
+  if (code.length < 2 || code.length > 8) return "The code must be 2–8 characters.";
+  if (!/^[A-Z0-9-]+$/.test(code)) {
+    return "The code may contain only letters, digits and hyphens.";
+  }
   const clash = orgLabs(orgId).some(
     (lab) => lab.id !== excludeLabId && lab.code.toUpperCase() === code,
   );
@@ -92,7 +98,9 @@ export const mockLabApi: LabApi = {
     return { status: "success" };
   },
 
-  async setLabStatus(orgId, labId, status, reason): Promise<LabActionResult> {
+  // Guard-only (no mutation) so a combined Save can validate the status change
+  // BEFORE committing any field edits (audit finding 20).
+  async checkLabStatusChange(orgId, labId, status, reason): Promise<LabActionResult> {
     const lab = mockDb.labs.get(labId);
     if (!lab || lab.orgId !== orgId) return { status: "error", message: "Unknown lab." };
     if (lab.status === status) return { status: "success" }; // no change, no reason needed
@@ -101,7 +109,6 @@ export const mockLabApi: LabApi = {
     if (!reason.trim()) {
       return { status: "error", message: "A reason is required to change the lab's status." };
     }
-
     if (status === "inactive") {
       if (lab.hasActiveWork) {
         // AC 5 — work must not be orphaned.
@@ -120,7 +127,14 @@ export const mockLabApi: LabApi = {
         };
       }
     }
+    return { status: "success" };
+  },
 
+  async setLabStatus(orgId, labId, status, reason): Promise<LabActionResult> {
+    const guard = await this.checkLabStatusChange(orgId, labId, status, reason);
+    if (guard.status === "error") return guard;
+    const lab = mockDb.labs.get(labId)!;
+    if (lab.status === status) return { status: "success" };
     lab.status = status;
     lab.statusReason = reason.trim();
     return { status: "success" };

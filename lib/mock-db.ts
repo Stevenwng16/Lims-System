@@ -11,9 +11,14 @@ export type SupportGrant = {
   grantedAt: number;
   expiresAt: number;
   allowAdmin: boolean;
-  sessionActive: boolean;
+  // Liveness of the vendor's session is DERIVED from a timestamp, never a
+  // sticky boolean (audit finding 27): a session left to time out or abandoned
+  // stops counting as active automatically.
+  sessionExpiresAt: number | null;
 };
 
+// userCount is NOT stored — it is derived from the live users map in
+// listOrganisations (audit finding 9), like lab/method counts elsewhere.
 export type MockOrganisation = {
   id: string;
   name: string;
@@ -21,7 +26,6 @@ export type MockOrganisation = {
   statusReason?: string;
   subscription: SubscriptionStatus;
   createdAt: string;
-  userCount: number;
   setupPending: boolean;
   supportGrant: SupportGrant | null;
 };
@@ -202,7 +206,6 @@ function seedDb(): MockDb {
     status: "active",
     subscription: "active",
     createdAt: "12 May 2026",
-    userCount: 2,
     setupPending: false,
     supportGrant: null,
   });
@@ -212,13 +215,12 @@ function seedDb(): MockDb {
     status: "active",
     subscription: "trial",
     createdAt: "24 Jun 2026",
-    userCount: 5,
     setupPending: false,
     supportGrant: {
       grantedAt: Date.now() - 24 * 3600_000,
       expiresAt: Date.now() + 48 * 3600_000,
       allowAdmin: false,
-      sessionActive: false,
+      sessionExpiresAt: null,
     },
   });
   organisations.set("org-oldcust", {
@@ -228,7 +230,6 @@ function seedDb(): MockDb {
     statusReason: "Non-payment (mock seed)",
     subscription: "ended",
     createdAt: "3 Feb 2026",
-    userCount: 3,
     setupPending: false,
     supportGrant: null,
   });
@@ -503,7 +504,7 @@ function seedDb(): MockDb {
   return { organisations, users, labs, orgSettings, methods };
 }
 
-export const mockDb: MockDb = ((globalThis as Record<string, unknown>).__limsMockDbV8 ??=
+export const mockDb: MockDb = ((globalThis as Record<string, unknown>).__limsMockDbV9 ??=
   seedDb()) as MockDb;
 
 export function getOrgSettings(orgId: string): OrgSettings {

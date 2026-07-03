@@ -1,39 +1,27 @@
 "use server";
 
 import { revalidatePath } from "next/cache";
-import { cookies } from "next/headers";
 import { redirect } from "next/navigation";
 import { userApi, type Actor } from "@/lib/users";
-import { decodeSession, SESSION_COOKIE } from "@/lib/auth/session";
-import { decodeSupportSession, SUPPORT_COOKIE } from "@/lib/platform/support-session";
-import { effectiveOrgRole, type OrgRole } from "@/lib/permissions";
-import { getOrgIdByName, mockDb } from "@/lib/mock-db";
+import { resolveOrgContext } from "@/lib/auth/context";
+import type { OrgRole } from "@/lib/permissions";
 
 export type UserFormState = { error?: string; success?: boolean; info?: string };
 
-// Resolve the acting user server-side (invariant 4). Admins and lab managers
-// only (US-A6 authorization); support sessions map through the US-A4 matrix.
+// Resolve the acting user server-side (invariant 4), live-validated. Admins and
+// lab managers only (US-A6 authorization); support sessions map through the
+// US-A4 matrix (an admin-rights grant acts as admin, read-only cannot manage).
 export async function resolveActor(): Promise<Actor> {
-  const cookieStore = await cookies();
-  const session = decodeSession(cookieStore.get(SESSION_COOKIE)?.value);
-  if (!session) redirect("/login");
-  const supportSession = decodeSupportSession(cookieStore.get(SUPPORT_COOKIE)?.value);
-  const role = effectiveOrgRole(session.user, supportSession);
-  if (role !== "admin" && role !== "lab-manager") redirect("/");
-
-  const orgId = supportSession?.orgId ?? getOrgIdByName(session.user.organisation);
-  if (!orgId) redirect("/");
-  const record = mockDb.users.get(session.user.email);
-  return {
-    email: session.user.email,
-    role,
-    labs: record?.labs ?? [],
-    orgId,
-  };
+  const ctx = await resolveOrgContext();
+  if (ctx.role !== "admin" && ctx.role !== "lab-manager") redirect("/");
+  return { email: ctx.user.email, role: ctx.role, labs: ctx.labs, orgId: ctx.orgId };
 }
 
 function parseInput(formData: FormData) {
   return {
+    // Blind cast is safe: lib/users/mock.ts validates the role against the four
+    // fixed OrgRole values (audit finding 17) so junk / "platform-admin" is
+    // rejected server-side regardless of what is posted.
     name: String(formData.get("name") ?? ""),
     email: String(formData.get("email") ?? ""),
     role: String(formData.get("role") ?? "read-only") as OrgRole,

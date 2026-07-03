@@ -5,13 +5,26 @@ function grantIsActive(org: MockOrganisation): boolean {
   return !!org.supportGrant && org.supportGrant.expiresAt > Date.now();
 }
 
+function sessionIsLive(org: MockOrganisation): boolean {
+  const at = org.supportGrant?.sessionExpiresAt;
+  return typeof at === "number" && at > Date.now();
+}
+
+function userCountOf(orgId: string): number {
+  return [...mockDb.users.values()].filter((u) => u.orgId === orgId).length;
+}
+
 export const mockPlatformApi: PlatformApi = {
   async listOrganisations() {
     // Expired grants read as "no grant" everywhere.
     for (const org of mockDb.organisations.values()) {
       if (org.supportGrant && !grantIsActive(org)) org.supportGrant = null;
     }
-    return [...mockDb.organisations.values()];
+    return [...mockDb.organisations.values()].map((org) => ({
+      ...org,
+      userCount: userCountOf(org.id), // derived live (finding 9)
+      supportSessionActive: sessionIsLive(org), // derived from timestamp (finding 27)
+    }));
   },
 
   async provisionOrganisation(name, adminEmail): Promise<ActionResult> {
@@ -25,14 +38,15 @@ export const mockPlatformApi: PlatformApi = {
     );
     if (exists) return { status: "error", message: "An organisation with this name already exists." };
 
-    const id = `org-${trimmed.toLowerCase().replace(/[^a-z0-9]+/g, "-")}`;
+    // Identity is decoupled from the name so two names that slugify the same
+    // can never overwrite an existing tenant (audit finding 8 — invariants 2/5).
+    const id = `org-${crypto.randomUUID()}`;
     mockDb.organisations.set(id, {
       id,
       name: trimmed,
       status: "active",
       subscription: "trial",
       createdAt: new Date().toLocaleDateString("en-GB", { day: "numeric", month: "short", year: "numeric" }),
-      userCount: 1, // the seeded admin (US-A1 AC 11)
       setupPending: true, // until the invited admin completes setup (AC 4)
       supportGrant: null,
     });
@@ -83,11 +97,15 @@ export const mockPlatformApi: PlatformApi = {
   async grantSupportAccess(orgId, durationHours, allowAdmin): Promise<ActionResult> {
     const org = mockDb.organisations.get(orgId);
     if (!org) return { status: "error", message: "Unknown organisation." };
+    // Defense in depth against a tampered POST (audit finding 10).
+    if (!Number.isFinite(durationHours) || durationHours < 1 || durationHours > 168) {
+      return { status: "error", message: "Invalid grant duration." };
+    }
     org.supportGrant = {
       grantedAt: Date.now(),
       expiresAt: Date.now() + durationHours * 3600_000,
       allowAdmin,
-      sessionActive: false,
+      sessionExpiresAt: null,
     };
     return { status: "success" };
   },
@@ -95,7 +113,10 @@ export const mockPlatformApi: PlatformApi = {
   async revokeSupportAccess(orgId): Promise<ActionResult> {
     const org = mockDb.organisations.get(orgId);
     if (!org) return { status: "error", message: "Unknown organisation." };
-    org.supportGrant = null; // also ends any active session (AC 8: revocable at any time)
+    // Nulling the grant makes getSupportGrant return null, so every request-
+    // path resolver (lib/auth/context.ts) drops the vendor's access at once —
+    // the revoke is genuinely instant, not cookie-lifetime (audit finding 5).
+    org.supportGrant = null;
     return { status: "success" };
   },
 
@@ -106,13 +127,22 @@ export const mockPlatformApi: PlatformApi = {
       // AC 10: without an active grant there is no way in.
       return { status: "error", message: "No active support grant for this organisation." };
     }
-    org.supportGrant.sessionActive = true;
-    return { status: "success", orgName: org.name, allowAdmin: org.supportGrant.allowAdmin };
+    // Session liveness capped to the grant (never outlives it).
+    org.supportGrant.sessionExpiresAt = Math.min(
+      Date.now() + 8 * 3600_000,
+      org.supportGrant.expiresAt,
+    );
+    return {
+      status: "success",
+      orgName: org.name,
+      allowAdmin: org.supportGrant.allowAdmin,
+      grantExpiresAt: org.supportGrant.expiresAt,
+    };
   },
 
   async endSupportSession(orgId): Promise<ActionResult> {
     const org = mockDb.organisations.get(orgId);
-    if (org?.supportGrant) org.supportGrant.sessionActive = false;
+    if (org?.supportGrant) org.supportGrant.sessionExpiresAt = null;
     return { status: "success" };
   },
 };

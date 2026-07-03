@@ -1,38 +1,21 @@
 "use server";
 
 import { revalidatePath } from "next/cache";
-import { cookies } from "next/headers";
 import { redirect } from "next/navigation";
 import { methodApi, type MethodActor, type MethodInput } from "@/lib/methods";
 import type { MethodAnalyte } from "@/lib/mock-db";
-import { decodeSession, SESSION_COOKIE } from "@/lib/auth/session";
-import { decodeSupportSession, SUPPORT_COOKIE } from "@/lib/platform/support-session";
-import { effectiveOrgRole } from "@/lib/permissions";
-import { getOrgIdByName, mockDb } from "@/lib/mock-db";
+import { resolveOrgContext } from "@/lib/auth/context";
 
 export type MethodFormState = { error?: string; success?: boolean; newVersion?: number };
 
-// All org roles may view methods; the mock API enforces manage rights
-// (admin / lab manager within own labs) per call. Mock stand-in for
-// invariant 4.
+// All org roles may view methods; the mock API enforces manage rights (admin /
+// lab manager within own labs) per call. Live-validated + org-gated via the
+// shared resolver, which also gives a support session org-wide lab visibility
+// (audit findings 4/6). A read-only grant sees but never manages (US-A4 AC 13).
 export async function resolveMethodActor(): Promise<MethodActor> {
-  const cookieStore = await cookies();
-  const session = decodeSession(cookieStore.get(SESSION_COOKIE)?.value);
-  if (!session) redirect("/login");
-  const supportSession = decodeSupportSession(cookieStore.get(SUPPORT_COOKIE)?.value);
-  const role = effectiveOrgRole(session.user, supportSession);
-  if (role === null) redirect("/");
-
-  const orgId = supportSession?.orgId ?? getOrgIdByName(session.user.organisation);
-  if (!orgId) redirect("/");
-  // A support session grants org-wide lab visibility (the vendor has no lab
-  // assignments of their own); role still limits what they can DO — a
-  // read-only grant can see but never manage (US-A2 AC 9 / US-A4 AC 13).
-  const labs =
-    session.user.role === "platform-admin" && supportSession
-      ? [...mockDb.labs.values()].filter((l) => l.orgId === orgId).map((l) => l.name)
-      : (mockDb.users.get(session.user.email)?.labs ?? []);
-  return { email: session.user.email, role, labs, orgId };
+  const ctx = await resolveOrgContext();
+  if (ctx.role === null || !ctx.orgId) redirect("/");
+  return { email: ctx.user.email, role: ctx.role, labs: ctx.labs, orgId: ctx.orgId };
 }
 
 function parseInput(formData: FormData): MethodInput | { parseError: string } {

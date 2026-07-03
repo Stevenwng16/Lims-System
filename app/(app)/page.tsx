@@ -3,11 +3,10 @@
 // The stat tiles and jobs table below are placeholder mock data.
 import Link from "next/link";
 import { cookies } from "next/headers";
-import { decodeSession, SESSION_COOKIE } from "@/lib/auth/session";
-import { LAB_COOKIE, resolveActiveLab } from "@/lib/lab";
-import { mockDb } from "@/lib/mock-db";
-import { decodeSupportSession, SUPPORT_COOKIE } from "@/lib/platform/support-session";
-import { can, effectiveOrgRole, ROLE_LABELS } from "@/lib/permissions";
+import { resolveOrgContext } from "@/lib/auth/context";
+import { activeLabsForUser, LAB_COOKIE, resolveActiveLab } from "@/lib/lab";
+import { adminNav, mainNav, visibleNav } from "@/lib/navigation";
+import { ROLE_LABELS } from "@/lib/permissions";
 
 const stats = [
   { label: "Open jobs", value: 14, hint: "3 due this week" },
@@ -33,38 +32,42 @@ const statusStyles: Record<string, string> = {
 };
 
 export default async function HomePage() {
+  const ctx = await resolveOrgContext();
+  const { user } = ctx;
   const cookieStore = await cookies();
-  const session = decodeSession(cookieStore.get(SESSION_COOKIE)?.value);
-  if (!session) return null; // layout redirects
 
-  const { user } = session;
-  const labs = mockDb.users.get(user.email)?.labs ?? [];
-  const activeLab = resolveActiveLab(labs, cookieStore.get(LAB_COOKIE)?.value);
-  const supportSession = decodeSupportSession(cookieStore.get(SUPPORT_COOKIE)?.value);
-  const role = effectiveOrgRole(user, supportSession);
+  const assignedLabs = ctx.isSupport ? [] : activeLabsForUser(ctx.labs, ctx.orgId);
+  const activeLab = resolveActiveLab(assignedLabs, cookieStore.get(LAB_COOKIE)?.value);
+
+  // Section links from the shared nav config, so every role sees exactly the
+  // sections they can reach and the list grows with the sidebar (finding 14).
+  const sections = [...visibleNav(mainNav, ctx.role), ...visibleNav(adminNav, ctx.role)].filter(
+    (item) => item.href !== "/",
+  );
 
   return (
     <div className="mx-auto max-w-6xl space-y-8">
       <section>
         <h1 className="text-xl font-semibold text-foreground">
-          Welcome, {user.name.split(" ")[0]} — {user.organisation}
-          {activeLab && ` · ${activeLab} lab`}
+          Welcome, {user.name.split(" ")[0]} — {ctx.isSupport ? ctx.support?.orgName : user.organisation}
+          {activeLab && ` · ${activeLab.name} lab`}
         </h1>
         <p className="mt-1 text-sm text-muted-foreground">
           Role: {ROLE_LABELS[user.role]}
-          {role !== null && can(role, "org-settings") && (
-            <>
-              {" · "}
-              <Link href="/admin/roles" className="underline-offset-4 hover:underline">
-                Roles &amp; permissions
-              </Link>
-              {" · "}
-              <Link href="/settings" className="underline-offset-4 hover:underline">
-                Settings
-              </Link>
-            </>
-          )}
         </p>
+        {sections.length > 0 && (
+          <nav className="mt-3 flex flex-wrap gap-x-4 gap-y-1 text-sm">
+            {sections.map((item) => (
+              <Link
+                key={item.href}
+                href={item.href}
+                className="text-primary underline-offset-4 hover:underline"
+              >
+                {item.title}
+              </Link>
+            ))}
+          </nav>
+        )}
       </section>
 
       <section>

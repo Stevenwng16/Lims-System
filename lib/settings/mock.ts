@@ -1,13 +1,16 @@
 import { getOrgSettings, mockDb } from "@/lib/mock-db";
-import { hasSeqToken } from "./format-id";
 import type { ListEdit, SettingsActionResult, SettingsApi } from "./types";
 
 function inRange(value: number, min: number, max: number, label: string): string | null {
-  if (!Number.isFinite(value) || value < min || value > max) {
-    return `${label} must be between ${min} and ${max}.`;
+  // Whole numbers only (audit finding 24): a lockout threshold of 5.5 would
+  // otherwise store and lock at 6.
+  if (!Number.isInteger(value) || value < min || value > max) {
+    return `${label} must be a whole number between ${min} and ${max}.`;
   }
   return null;
 }
+
+const SEQ_TOKEN_GLOBAL = /\{SEQ:0+\}/g;
 
 export const mockSettingsApi: SettingsApi = {
   async getSettings(orgId) {
@@ -26,18 +29,33 @@ export const mockSettingsApi: SettingsApi = {
   },
 
   async updateIdentifiers(orgId, identifiers, jobLabel): Promise<SettingsActionResult> {
-    // AC 7: a template without a {SEQ} token can never produce unique IDs.
-    for (const [label, template] of [
-      ["Job number format", identifiers.jobFormat],
-      ["Sample number format", identifiers.sampleFormat],
-      ["Batch number format", identifiers.batchFormat],
-    ] as const) {
-      if (!hasSeqToken(template)) {
+    // AC 7: exactly one {SEQ} token per template (zero → not unique; more than
+    // one → only the first renders, audit finding 25). {JOB} belongs to the
+    // sample number only.
+    const templates = [
+      ["Job number format", identifiers.jobFormat, false],
+      ["Sample number format", identifiers.sampleFormat, true],
+      ["Batch number format", identifiers.batchFormat, false],
+    ] as const;
+    for (const [label, template, jobAllowed] of templates) {
+      const seqCount = (template.match(SEQ_TOKEN_GLOBAL) ?? []).length;
+      if (seqCount !== 1) {
         return {
           status: "error",
-          message: `${label} must contain a {SEQ:000} token — without it IDs cannot be unique.`,
+          message: `${label} must contain exactly one {SEQ:000} token.`,
         };
       }
+      if (!jobAllowed && /\{JOB\}/.test(template)) {
+        return {
+          status: "error",
+          message: `${label}: the {JOB} token is only available in the sample number format.`,
+        };
+      }
+    }
+    if (identifiers.sequenceReset !== "never" &&
+        identifiers.sequenceReset !== "yearly" &&
+        identifiers.sequenceReset !== "monthly") {
+      return { status: "error", message: "Sequence reset must be never, yearly or monthly." };
     }
     if (!jobLabel.trim()) return { status: "error", message: "The job label cannot be empty." };
     const settings = getOrgSettings(orgId);
@@ -51,11 +69,27 @@ export const mockSettingsApi: SettingsApi = {
     const settings = getOrgSettings(orgId);
     const current = settings[list];
 
-    for (const item of edit.items) {
-      if (!item.name.trim()) return { status: "error", message: "List entries cannot be empty." };
+    // Validate the WHOLE edit before mutating anything (audit finding 23):
+    // empties, and case-insensitive duplicates across renames + the new item.
+    const finalNames: string[] = [];
+    for (const item of current) {
+      const edited = edit.items.find((e) => e.id === item.id);
+      const name = (edited ? edited.name : item.name).trim();
+      if (!name) return { status: "error", message: "List entries cannot be empty." };
+      finalNames.push(name);
     }
-    // Reconcile by id: rename/(de)activate only — deletion does not exist
-    // (AC 9: historical records keep their value).
+    const newName = edit.newName?.trim();
+    if (newName) finalNames.push(newName);
+    const seen = new Set<string>();
+    for (const name of finalNames) {
+      const key = name.toLowerCase();
+      if (seen.has(key)) {
+        return { status: "error", message: `"${name}" appears more than once in the list.` };
+      }
+      seen.add(key);
+    }
+
+    // All checks passed — now apply (rename/(de)activate; never delete, AC 9).
     for (const item of edit.items) {
       const existing = current.find((c) => c.id === item.id);
       if (existing) {
@@ -63,12 +97,9 @@ export const mockSettingsApi: SettingsApi = {
         existing.active = item.active;
       }
     }
-    const newName = edit.newName?.trim();
     if (newName) {
-      if (current.some((c) => c.name.toLowerCase() === newName.toLowerCase())) {
-        return { status: "error", message: `"${newName}" is already in the list.` };
-      }
-      current.push({ id: `${list}-${Date.now()}`, name: newName, active: true });
+      // Stable-ish id without Date.now() collisions within one save.
+      current.push({ id: `${list}-${current.length}-${newName.toLowerCase()}`, name: newName, active: true });
     }
     return { status: "success" };
   },
