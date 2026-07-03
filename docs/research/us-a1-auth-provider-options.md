@@ -1,6 +1,6 @@
 # US-A1 — Auth provider evaluation (research note, 3 Jul 2026)
 
-Status: **decision pending — Ramazan is deciding.** This note preserves the analysis; the chosen option gets one line in `decision-log.md` when decided. Sources were verified against live vendor docs/pricing on 3 Jul 2026.
+Status: **decided 3 Jul 2026 — Supabase Auth (Pro), server-proxy pattern** (Ramazan's call; logged in `decision-log.md`). This note preserves the analysis behind it. Sources were verified against live vendor docs/pricing on 3 Jul 2026.
 
 ## Hard requirements tested (from US-A1 ACs)
 
