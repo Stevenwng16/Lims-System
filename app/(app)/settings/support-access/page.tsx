@@ -19,7 +19,9 @@ export const metadata = { title: "Support access — LIMS" };
 export default async function SupportAccessPage() {
   const cookieStore = await cookies();
   const session = decodeSession(cookieStore.get(SESSION_COOKIE)?.value);
-  if (session?.user.role !== "org-admin") redirect("/");
+  // Real Admin only — grant management stays with the customer even during
+  // an admin-rights support session (see actions.ts).
+  if (session?.user.role !== "admin") redirect("/");
 
   const orgId = session.user.organisation === "Demo Lab" ? "org-demolab" : "org-unknown";
   const grant = await platformApi.getSupportGrant(orgId);

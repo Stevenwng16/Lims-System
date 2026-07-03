@@ -2,8 +2,8 @@
 
 import Link from "next/link";
 import { usePathname } from "next/navigation";
-import { FlaskConical, Home, Settings } from "lucide-react";
-import type { UserRole } from "@/lib/auth";
+import { FlaskConical, Home, Settings, ShieldCheck } from "lucide-react";
+import { can, type Capability, type OrgRole } from "@/lib/permissions";
 import {
   Sidebar,
   SidebarContent,
@@ -20,16 +20,30 @@ import {
 // US-A3 AC 2: the target structure is Jobs / Batches / Quality / Methods /
 // Reports / Admin — items appear only once their feature exists, so the
 // phase-1 sidebar is small and grows per story without layout rework.
-// Visibility is role-aware presentation only (AC 3); the server enforces.
+// Visibility follows the US-A4 capability matrix (AC 12) and is presentation
+// only — the server enforces the same matrix.
 
-const mainItems = [{ title: "Home", href: "/", icon: Home }];
+type NavItem = {
+  title: string;
+  href: string;
+  icon: typeof Home;
+  requires?: Capability;
+};
 
-const adminItems = [
-  { title: "Settings", href: "/settings/support-access", icon: Settings },
+const mainItems: NavItem[] = [{ title: "Home", href: "/", icon: Home }];
+
+const adminItems: NavItem[] = [
+  { title: "Roles & permissions", href: "/admin/roles", icon: ShieldCheck, requires: "org-settings" },
+  { title: "Settings", href: "/settings/support-access", icon: Settings, requires: "org-settings" },
 ];
 
-export function AppSidebar({ role }: { role: UserRole }) {
+function visible(items: NavItem[], role: OrgRole | null): NavItem[] {
+  return items.filter((item) => !item.requires || (role !== null && can(role, item.requires)));
+}
+
+export function AppSidebar({ role }: { role: OrgRole | null }) {
   const pathname = usePathname();
+  const admin = visible(adminItems, role);
 
   return (
     <Sidebar collapsible="icon">
@@ -45,7 +59,7 @@ export function AppSidebar({ role }: { role: UserRole }) {
         <SidebarGroup>
           <SidebarGroupContent>
             <SidebarMenu>
-              {mainItems.map((item) => (
+              {visible(mainItems, role).map((item) => (
                 <SidebarMenuItem key={item.href}>
                   <SidebarMenuButton
                     isActive={pathname === item.href}
@@ -60,12 +74,12 @@ export function AppSidebar({ role }: { role: UserRole }) {
             </SidebarMenu>
           </SidebarGroupContent>
         </SidebarGroup>
-        {role === "org-admin" && (
+        {admin.length > 0 && (
           <SidebarGroup>
             <SidebarGroupLabel>Admin</SidebarGroupLabel>
             <SidebarGroupContent>
               <SidebarMenu>
-                {adminItems.map((item) => (
+                {admin.map((item) => (
                   <SidebarMenuItem key={item.href}>
                     <SidebarMenuButton
                       isActive={pathname.startsWith(item.href)}

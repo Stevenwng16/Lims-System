@@ -5,6 +5,7 @@ import { decodeSession, SESSION_COOKIE } from "@/lib/auth/session";
 import { LAB_COOKIE, resolveActiveLab } from "@/lib/lab";
 import { mockDb } from "@/lib/mock-db";
 import { decodeSupportSession, SUPPORT_COOKIE } from "@/lib/platform/support-session";
+import { effectiveOrgRole, ROLE_LABELS } from "@/lib/permissions";
 import { AppSidebar } from "@/components/app-sidebar";
 import { LabSwitcher } from "@/components/lab-switcher";
 import { SupportBanner } from "@/components/support-banner";
@@ -12,12 +13,6 @@ import { ThemeToggle } from "@/components/theme-toggle";
 import { Button } from "@/components/ui/button";
 import { Separator } from "@/components/ui/separator";
 import { SidebarInset, SidebarProvider, SidebarTrigger } from "@/components/ui/sidebar";
-
-const roleLabels = {
-  "org-admin": "Admin",
-  "org-member": "Member",
-  "platform-admin": "Vendor support",
-} as const;
 
 // The one consistent shell every authenticated screen renders in (US-A3 AC 1).
 // Unauthenticated pages live in the (auth) group and never get it.
@@ -40,9 +35,13 @@ export default async function AppShellLayout({ children }: { children: React.Rea
       ? `${supportSession.orgName} (support)`
       : user.organisation;
 
+  // Menu visibility follows the capability matrix (US-A4 AC 12); vendor
+  // support sessions map onto the same matrix (AC 13).
+  const role = effectiveOrgRole(user, supportSession);
+
   return (
     <SidebarProvider defaultOpen={defaultOpen}>
-      <AppSidebar role={user.role} />
+      <AppSidebar role={role} />
       <SidebarInset>
         <header className="flex h-14 items-center gap-3 border-b bg-background px-4">
           <SidebarTrigger aria-label="Toggle sidebar" />
@@ -54,7 +53,7 @@ export default async function AppShellLayout({ children }: { children: React.Rea
           <div className="ml-auto flex items-center gap-3">
             <ThemeToggle />
             <span className="text-sm text-muted-foreground">
-              {user.name} ({roleLabels[user.role]})
+              {user.name} ({ROLE_LABELS[user.role]})
             </span>
             <form action={logoutAction}>
               <Button type="submit" variant="outline" size="sm">

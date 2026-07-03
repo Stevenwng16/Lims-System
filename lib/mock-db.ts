@@ -29,6 +29,7 @@ export type MockOrganisation = {
 export type MockUser = SessionUser & {
   orgId: string | null; // null for platform (vendor) staff
   labs: string[]; // lab assignment proper arrives with US-A5/A6
+  clearances: string[]; // method clearances (US-A4 AC 6; editable via US-A6)
   password: string;
   mfaRequired: boolean;
   failedAttempts: number;
@@ -88,9 +89,21 @@ function seedDb(): MockDb {
     email: "admin@demolab.nl",
     name: "Alex Admin",
     organisation: "Demo Lab",
-    role: "org-admin",
+    role: "admin",
     orgId: "org-demolab",
     labs: ["Metals", "Water"], // two labs → lab switcher visible (US-A3 AC 4)
+    clearances: [],
+    mfaRequired: false,
+  });
+  users.set("labmanager@demolab.nl", {
+    ...base,
+    email: "labmanager@demolab.nl",
+    name: "Lisa Manager",
+    organisation: "Demo Lab",
+    role: "lab-manager",
+    orgId: "org-demolab",
+    labs: ["Metals"],
+    clearances: [],
     mfaRequired: false,
   });
   users.set("analyst@demolab.nl", {
@@ -98,19 +111,32 @@ function seedDb(): MockDb {
     email: "analyst@demolab.nl",
     name: "Sam Analyst",
     organisation: "Demo Lab",
-    role: "org-member",
+    role: "analyst",
     orgId: "org-demolab",
     labs: ["Metals"], // one lab → name only, no switcher
+    clearances: ["pH (M-001)", "Metals by ICP-MS (M-014)"],
     mfaRequired: true,
+  });
+  users.set("readonly@demolab.nl", {
+    ...base,
+    email: "readonly@demolab.nl",
+    name: "Rob Reader",
+    organisation: "Demo Lab",
+    role: "read-only",
+    orgId: "org-demolab",
+    labs: ["Metals"],
+    clearances: [],
+    mfaRequired: false,
   });
   users.set("user@oldcust.nl", {
     ...base,
     email: "user@oldcust.nl",
     name: "Olga Oldcust",
     organisation: "OldCust BV",
-    role: "org-member",
+    role: "read-only",
     orgId: "org-oldcust",
     labs: ["General"],
+    clearances: [],
     mfaRequired: false,
   });
   users.set("vendor@lims.dev", {
@@ -121,11 +147,12 @@ function seedDb(): MockDb {
     role: "platform-admin",
     orgId: null,
     labs: [],
+    clearances: [],
     mfaRequired: false,
   });
 
   return { organisations, users };
 }
 
-export const mockDb: MockDb = ((globalThis as Record<string, unknown>).__limsMockDbV2 ??=
+export const mockDb: MockDb = ((globalThis as Record<string, unknown>).__limsMockDbV3 ??=
   seedDb()) as MockDb;

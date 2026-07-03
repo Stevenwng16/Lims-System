@@ -2,10 +2,10 @@
 // The mock implementation lives in mock.ts; the real backend plugs in as an
 // adapter implementing this same interface (see decision log, 3 Jul 2026).
 
-// Minimal role model for now: US-A4 (roles & permissions) will replace this
-// with the real permission matrix. "platform-admin" is vendor staff (US-A2
-// AC 3) and carries no customer organisation.
-export type UserRole = "org-admin" | "org-member" | "platform-admin";
+// The four fixed organisation roles of US-A4 AC 1, plus "platform-admin" for
+// vendor staff (US-A2 AC 3), who carry no customer organisation. The
+// capability matrix lives in lib/permissions.ts.
+export type UserRole = "admin" | "lab-manager" | "analyst" | "read-only" | "platform-admin";
 
 export type SessionUser = {
   email: string;

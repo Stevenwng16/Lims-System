@@ -9,11 +9,13 @@ import { decodeSession, SESSION_COOKIE } from "@/lib/auth/session";
 export type SupportAccessFormState = { error?: string; success?: boolean };
 
 // Mock stand-in for real server-side enforcement (invariant 4): only the
-// organisation's own Admin manages its support grants (US-A2 AC 8).
+// organisation's own Admin manages its support grants (US-A2 AC 8). Grant
+// management is deliberately NOT reachable through a support session — the
+// customer decides who gets in, never the vendor.
 async function requireOrgAdmin(): Promise<string> {
   const cookieStore = await cookies();
   const session = decodeSession(cookieStore.get(SESSION_COOKIE)?.value);
-  if (session?.user.role !== "org-admin") redirect("/");
+  if (session?.user.role !== "admin") redirect("/");
   // Mock: resolve the org id from the organisation name in the session.
   return session.user.organisation === "Demo Lab" ? "org-demolab" : "org-unknown";
 }

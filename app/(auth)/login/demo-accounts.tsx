@@ -3,8 +3,10 @@
 // usage in page.tsx) once the real backend replaces the mock.
 
 const accounts = [
-  { email: "admin@demolab.nl", note: "org admin, Demo Lab" },
-  { email: "analyst@demolab.nl", note: "org member, MFA — code 123456" },
+  { email: "admin@demolab.nl", note: "Admin, 2 labs (switcher)" },
+  { email: "labmanager@demolab.nl", note: "Lab manager, Metals lab" },
+  { email: "analyst@demolab.nl", note: "Analyst, MFA — code 123456" },
+  { email: "readonly@demolab.nl", note: "Read-only" },
   { email: "vendor@lims.dev", note: "platform admin → vendor console" },
   { email: "user@oldcust.nl", note: "member of suspended org" },
 ];

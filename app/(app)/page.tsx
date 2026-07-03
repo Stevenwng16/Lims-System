@@ -6,6 +6,8 @@ import { cookies } from "next/headers";
 import { decodeSession, SESSION_COOKIE } from "@/lib/auth/session";
 import { LAB_COOKIE, resolveActiveLab } from "@/lib/lab";
 import { mockDb } from "@/lib/mock-db";
+import { decodeSupportSession, SUPPORT_COOKIE } from "@/lib/platform/support-session";
+import { can, effectiveOrgRole, ROLE_LABELS } from "@/lib/permissions";
 
 const stats = [
   { label: "Open jobs", value: 14, hint: "3 due this week" },
@@ -30,12 +32,6 @@ const statusStyles: Record<string, string> = {
   Completed: "bg-emerald-50 text-emerald-800 dark:bg-emerald-950 dark:text-emerald-300",
 };
 
-const roleLabels = {
-  "org-admin": "Admin",
-  "org-member": "Member",
-  "platform-admin": "Vendor support",
-} as const;
-
 export default async function HomePage() {
   const cookieStore = await cookies();
   const session = decodeSession(cookieStore.get(SESSION_COOKIE)?.value);
@@ -44,6 +40,8 @@ export default async function HomePage() {
   const { user } = session;
   const labs = mockDb.users.get(user.email)?.labs ?? [];
   const activeLab = resolveActiveLab(labs, cookieStore.get(LAB_COOKIE)?.value);
+  const supportSession = decodeSupportSession(cookieStore.get(SUPPORT_COOKIE)?.value);
+  const role = effectiveOrgRole(user, supportSession);
 
   return (
     <div className="mx-auto max-w-6xl space-y-8">
@@ -53,9 +51,13 @@ export default async function HomePage() {
           {activeLab && ` · ${activeLab} lab`}
         </h1>
         <p className="mt-1 text-sm text-muted-foreground">
-          Role: {roleLabels[user.role]}
-          {user.role === "org-admin" && (
+          Role: {ROLE_LABELS[user.role]}
+          {role !== null && can(role, "org-settings") && (
             <>
+              {" · "}
+              <Link href="/admin/roles" className="underline-offset-4 hover:underline">
+                Roles &amp; permissions
+              </Link>
               {" · "}
               <Link href="/settings/support-access" className="underline-offset-4 hover:underline">
                 Settings
