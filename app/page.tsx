@@ -1,5 +1,9 @@
 // Placeholder dashboard with mock data — the real screens are built story by
 // story (navigation shell: US-A3, job overview: US-C2, dashboards: epic G).
+import { cookies } from "next/headers";
+import { logoutAction } from "./(auth)/actions";
+import { decodeSession, SESSION_COOKIE } from "@/lib/auth/session";
+import { Button } from "@/components/ui/button";
 
 const stats = [
   { label: "Open jobs", value: 14, hint: "3 due this week" },
@@ -24,7 +28,10 @@ const statusStyles: Record<string, string> = {
   Completed: "bg-emerald-50 text-emerald-800 dark:bg-emerald-950 dark:text-emerald-300",
 };
 
-export default function Home() {
+export default async function Home() {
+  const cookieStore = await cookies();
+  const session = decodeSession(cookieStore.get(SESSION_COOKIE)?.value);
+
   return (
     <div className="min-h-screen bg-zinc-50 font-sans dark:bg-zinc-950">
       <header className="border-b border-zinc-200 bg-white dark:border-zinc-800 dark:bg-zinc-900">
@@ -37,9 +44,23 @@ export default function Home() {
               Demo Lab · Schiedam
             </span>
           </div>
-          <span className="rounded-full border border-dashed border-zinc-300 px-3 py-1 text-xs text-zinc-500 dark:border-zinc-700 dark:text-zinc-400">
-            Placeholder — mock data
-          </span>
+          <div className="flex items-center gap-4">
+            <span className="rounded-full border border-dashed border-zinc-300 px-3 py-1 text-xs text-zinc-500 dark:border-zinc-700 dark:text-zinc-400">
+              Placeholder — mock data
+            </span>
+            {session && (
+              <>
+                <span className="text-sm text-zinc-600 dark:text-zinc-300">
+                  {session.user.name}
+                </span>
+                <form action={logoutAction}>
+                  <Button type="submit" variant="outline" size="sm">
+                    Log out
+                  </Button>
+                </form>
+              </>
+            )}
+          </div>
         </div>
       </header>
 
