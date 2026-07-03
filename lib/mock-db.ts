@@ -267,12 +267,50 @@ export type MockJob = {
   samples: MockSample[];
 };
 
+// QC materials (US-B2). The three types are FIXED because each carries its own
+// comparison behaviour for epic E: Blank → below the method's LOQ (no numeric
+// target), Control standard / CRM → value ± tolerance (CRM adds the
+// certificate = metrological traceability, §6.5).
+export type QcType = "blank" | "control-standard" | "crm";
+
+export type QcTolerance = {
+  kind: "absolute" | "percent"; // per analyte (AC 4): CRMs often absolute, standards often %
+  value: string; // decimal STRING, never a float (CLAUDE.md hard rule)
+};
+
+export type QcExpectedValue = {
+  id: string;
+  analyteName: string; // free configuration; matched to method analytes by name (ci) + unit (AC 9)
+  unit: string | null; // null = explicit "no unit", consistent with US-B1
+  expectedValue: string; // decimal STRING
+  tolerance: QcTolerance;
+};
+
+export type MockQcMaterial = {
+  id: string;
+  orgId: string;
+  labId: string;
+  name: string;
+  code: string; // matched (case-insensitively) on instrument-import rows (US-D5); unique per lab among ACTIVE materials
+  type: QcType;
+  supplier: string;
+  lotNumber: string; // required for Control standards and CRMs; optional for Blanks (AC 2)
+  expiryDate: string; // "yyyy-mm-dd"; required for CS/CRM, optional for Blanks
+  certificate: Attachment | null; // via the central attachment facility (ADR-3)
+  description: string;
+  expectedValues: QcExpectedValue[]; // empty for Blanks (below-limit, no numeric target)
+  status: "active" | "inactive"; // deactivate, never delete (AC 8)
+  statusReason?: string; // required on every status change (invariant 2; decision 4 Jul 2026)
+  createdAt: string;
+};
+
 export type MockDb = {
   organisations: Map<string, MockOrganisation>;
   users: Map<string, MockUser>;
   labs: Map<string, MockLab>;
   orgSettings: Map<string, OrgSettings>;
   methods: Map<string, MockMethod>;
+  qcMaterials: Map<string, MockQcMaterial>;
   jobs: Map<string, MockJob>;
   // Per-org+per-lab+period job counters and per-job sample counters (US-A7 AC 3
   // sequence isolation). Key formats: "job:<orgId>:<labId>:<period>" and
@@ -585,6 +623,112 @@ function seedDb(): MockDb {
     ],
   });
 
+  // Seed QC materials (US-B2), all in the Metals lab. "Metals mix 1" covers
+  // Pb/Cd/Zn in mg/L — matching m-icpms's analytes by name+unit (AC 9 demo);
+  // the CRM's mg/kg units deliberately do NOT match (non-covering example).
+  const qcMaterials = new Map<string, MockQcMaterial>();
+  qcMaterials.set("qc-cs1", {
+    id: "qc-cs1",
+    orgId: "org-demolab",
+    labId: "lab-met",
+    name: "Metals mix 1",
+    code: "CS1",
+    type: "control-standard",
+    supplier: "Acme Standards",
+    lotNumber: "MM-2026-A",
+    expiryDate: "2027-03-01",
+    certificate: null,
+    description: "Working control standard for ICP-MS metals",
+    expectedValues: [
+      { id: "ev1", analyteName: "Pb", unit: "mg/L", expectedValue: "5.0", tolerance: { kind: "absolute", value: "0.3" } },
+      { id: "ev2", analyteName: "Cd", unit: "mg/L", expectedValue: "2.0", tolerance: { kind: "percent", value: "5" } },
+      { id: "ev3", analyteName: "Zn", unit: "mg/L", expectedValue: "10.0", tolerance: { kind: "absolute", value: "0.5" } },
+    ],
+    status: "active",
+    createdAt: "12 May 2026",
+  });
+  qcMaterials.set("qc-blk", {
+    id: "qc-blk",
+    orgId: "org-demolab",
+    labId: "lab-met",
+    name: "Reagent blank",
+    code: "BLK",
+    type: "blank",
+    supplier: "",
+    lotNumber: "", // blanks are often prepared fresh — no lot/expiry (AC 2)
+    expiryDate: "",
+    certificate: null,
+    description: "Fresh-prepared reagent blank",
+    expectedValues: [], // below-limit vs the method's LOQ (epic E) — no numeric target
+    status: "active",
+    createdAt: "12 May 2026",
+  });
+  qcMaterials.set("qc-crm1", {
+    id: "qc-crm1",
+    orgId: "org-demolab",
+    labId: "lab-met",
+    name: "River sediment",
+    code: "CRM1",
+    type: "crm",
+    supplier: "NIST",
+    lotNumber: "NIST-2782",
+    expiryDate: "2028-11-30",
+    certificate: {
+      id: "att-cert-crm1",
+      fileName: "cert_NIST-2782.pdf",
+      sizeBytes: 48_128,
+      sha256: "seed-checksum-no-real-file-0000000000000000000000000000000000000000",
+      uploadedAt: "12 May 2026",
+      uploadedBy: "admin@demolab.nl",
+    },
+    description: "Certified reference material, sediment matrix",
+    expectedValues: [
+      { id: "ev1", analyteName: "Pb", unit: "mg/kg", expectedValue: "150.3", tolerance: { kind: "absolute", value: "7.4" } },
+      { id: "ev2", analyteName: "Cd", unit: "mg/kg", expectedValue: "4.17", tolerance: { kind: "absolute", value: "0.34" } },
+    ],
+    status: "active",
+    createdAt: "12 May 2026",
+  });
+  qcMaterials.set("qc-cs2", {
+    id: "qc-cs2",
+    orgId: "org-demolab",
+    labId: "lab-met",
+    name: "Cal check standard",
+    code: "CS2",
+    type: "control-standard",
+    supplier: "Acme Standards",
+    lotNumber: "CC-2025-B",
+    expiryDate: "2026-07-25", // expires within 30 days → "expires soon" flag demo
+    certificate: null,
+    description: "",
+    expectedValues: [
+      { id: "ev1", analyteName: "Pb", unit: "mg/L", expectedValue: "1.0", tolerance: { kind: "percent", value: "10" } },
+    ],
+    status: "active",
+    createdAt: "2 Jun 2026",
+  });
+  qcMaterials.set("qc-cs1-old", {
+    id: "qc-cs1-old",
+    orgId: "org-demolab",
+    labId: "lab-met",
+    name: "Metals mix 1",
+    code: "CS1", // same code as the active lot — allowed: uniqueness counts ACTIVE materials only
+    type: "control-standard",
+    supplier: "Acme Standards",
+    lotNumber: "MM-2025-D",
+    expiryDate: "2026-04-01", // in the past → expired flag demo
+    certificate: null,
+    description: "Previous lot (retained as its own record, AC 7)",
+    expectedValues: [
+      { id: "ev1", analyteName: "Pb", unit: "mg/L", expectedValue: "5.1", tolerance: { kind: "absolute", value: "0.3" } },
+      { id: "ev2", analyteName: "Cd", unit: "mg/L", expectedValue: "2.1", tolerance: { kind: "percent", value: "5" } },
+      { id: "ev3", analyteName: "Zn", unit: "mg/L", expectedValue: "9.8", tolerance: { kind: "absolute", value: "0.5" } },
+    ],
+    status: "inactive",
+    statusReason: "Lot expired; replaced by MM-2026-A (mock seed)",
+    createdAt: "3 Nov 2025",
+  });
+
   // Seed one example job (US-C1) so the list/detail have content. Sample types
   // reference the org's seeded sample-type list ids (st-1 Water, st-2 Soil).
   const jobs = new Map<string, MockJob>();
@@ -711,10 +855,10 @@ function seedDb(): MockDb {
   sequences.set("sample:org-demolab:MET26-00004", 1);
   sequences.set("sample:org-demolab:MET26-00005", 1);
 
-  return { organisations, users, labs, orgSettings, methods, jobs, sequences };
+  return { organisations, users, labs, orgSettings, methods, qcMaterials, jobs, sequences };
 }
 
-export const mockDb: MockDb = ((globalThis as Record<string, unknown>).__limsMockDbV14 ??=
+export const mockDb: MockDb = ((globalThis as Record<string, unknown>).__limsMockDbV15 ??=
   seedDb()) as MockDb;
 
 export function getOrgSettings(orgId: string): OrgSettings {

@@ -2,6 +2,7 @@ import {
   Beaker,
   Building2,
   ClipboardList,
+  FlaskRound,
   Settings,
   ShieldCheck,
   Users,
@@ -27,6 +28,8 @@ export type NavItem = {
 
 export const mainNav: NavItem[] = [
   { title: "Jobs", href: "/jobs", icon: ClipboardList, requires: "view-data" },
+  // First item of the US-A3 "Quality" section; Equipment joins with US-B3.
+  { title: "QC materials", href: "/quality/qc-materials", icon: FlaskRound, requires: "view-data" },
   { title: "Methods", href: "/methods", icon: Beaker, requires: "view-data" },
 ];
 
