@@ -36,10 +36,14 @@ export const mockAuthApi: AuthApi = {
       return user.locked ? { status: "locked" } : { status: "invalid" };
     }
     user.failedAttempts = 0;
+    // Deactivated users can no longer log in (US-A6 AC 6) — same generic
+    // message as a wrong password, nothing to probe.
+    if (user.status === "inactive") return { status: "invalid" };
     // Only after successful authentication, so the message can't be used to
     // probe org status with guessed passwords (US-A2 AC 6).
     if (orgSuspended(user)) return { status: "org-suspended" };
     if (user.mfaRequired) return { status: "mfa_required", mfaToken: `mfa:${user.email}` };
+    user.lastLogin = new Date().toLocaleDateString("en-GB", { day: "numeric", month: "short", year: "numeric" });
     return { status: "success", user: toSessionUser(user) };
   },
 
@@ -47,6 +51,7 @@ export const mockAuthApi: AuthApi = {
     const email = mfaToken.startsWith("mfa:") ? mfaToken.slice(4) : "";
     const user = mockDb.users.get(email);
     if (!user || code !== DEMO_MFA_CODE) return { status: "invalid" };
+    user.lastLogin = new Date().toLocaleDateString("en-GB", { day: "numeric", month: "short", year: "numeric" });
     return { status: "success", user: toSessionUser(user) };
   },
 

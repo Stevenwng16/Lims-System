@@ -2,7 +2,7 @@
 
 import Link from "next/link";
 import { usePathname } from "next/navigation";
-import { Building2, FlaskConical, Home, Settings, ShieldCheck } from "lucide-react";
+import { Building2, FlaskConical, Home, Settings, ShieldCheck, Users } from "lucide-react";
 import { can, type Capability, type OrgRole } from "@/lib/permissions";
 import {
   Sidebar,
@@ -28,18 +28,28 @@ type NavItem = {
   href: string;
   icon: typeof Home;
   requires?: Capability;
+  // For items whose access is scoped rather than matrix-flat (US-A6: lab
+  // managers manage Analyst/Read-only users within their own labs, even
+  // though the coarse "Manage users" matrix row is Admin-only).
+  visibleFor?: OrgRole[];
 };
 
 const mainItems: NavItem[] = [{ title: "Home", href: "/", icon: Home }];
 
 const adminItems: NavItem[] = [
   { title: "Roles & permissions", href: "/admin/roles", icon: ShieldCheck, requires: "org-settings" },
+  { title: "Users", href: "/admin/users", icon: Users, visibleFor: ["admin", "lab-manager"] },
   { title: "Labs", href: "/admin/labs", icon: Building2, requires: "org-settings" },
   { title: "Settings", href: "/settings/support-access", icon: Settings, requires: "org-settings" },
 ];
 
 function visible(items: NavItem[], role: OrgRole | null): NavItem[] {
-  return items.filter((item) => !item.requires || (role !== null && can(role, item.requires)));
+  return items.filter((item) => {
+    if (role === null) return !item.requires && !item.visibleFor;
+    if (item.visibleFor) return item.visibleFor.includes(role);
+    if (item.requires) return can(role, item.requires);
+    return true;
+  });
 }
 
 export function AppSidebar({ role }: { role: OrgRole | null }) {

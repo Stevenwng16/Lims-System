@@ -40,15 +40,29 @@ export type MockLab = {
   hasActiveWork: boolean; // blocks deactivation (US-A5 AC 5)
 };
 
+// NOTE (US-A6 AC 13): the real data model must separate *identity* (email +
+// credentials) from *organisation membership* (role, labs, clearances). The
+// mock keeps a flat record because it only ever has one membership per
+// identity (AC 11) — the split is a backend obligation, not a UI one.
 export type MockUser = SessionUser & {
   orgId: string | null; // null for platform (vendor) staff
-  labs: string[]; // lab assignment proper arrives with US-A5/A6
-  clearances: string[]; // method clearances (US-A4 AC 6; editable via US-A6)
+  labs: string[]; // lab assignments (edited in US-A6)
+  clearances: string[]; // method clearances (US-A4 AC 6; edited in US-A6)
+  status: "active" | "inactive"; // deactivated, never deleted (US-A6 AC 6)
+  lastLogin: string | null;
   password: string;
   mfaRequired: boolean;
   failedAttempts: number;
   locked: boolean;
 };
+
+// Mock method catalog until methods become real domain data (US-B1).
+export const MOCK_METHODS = [
+  "pH (M-001)",
+  "Conductivity (M-002)",
+  "Metals by ICP-MS (M-014)",
+  "Chloride by IC (M-021)",
+] as const;
 
 export type MockDb = {
   organisations: Map<string, MockOrganisation>;
@@ -98,7 +112,13 @@ function seedDb(): MockDb {
   });
 
   const users = new Map<string, MockUser>();
-  const base = { password: DEMO_PASSWORD, failedAttempts: 0, locked: false };
+  const base = {
+    password: DEMO_PASSWORD,
+    failedAttempts: 0,
+    locked: false,
+    status: "active" as const,
+    lastLogin: "2 Jul 2026",
+  };
   users.set("admin@demolab.nl", {
     ...base,
     email: "admin@demolab.nl",
@@ -141,6 +161,7 @@ function seedDb(): MockDb {
     orgId: "org-demolab",
     labs: ["Metals"],
     clearances: [],
+    lastLogin: null, // never logged in yet → "—" in the users list
     mfaRequired: false,
   });
   users.set("user@oldcust.nl", {
@@ -227,7 +248,7 @@ function seedDb(): MockDb {
   return { organisations, users, labs };
 }
 
-export const mockDb: MockDb = ((globalThis as Record<string, unknown>).__limsMockDbV4 ??=
+export const mockDb: MockDb = ((globalThis as Record<string, unknown>).__limsMockDbV5 ??=
   seedDb()) as MockDb;
 
 export function getOrgIdByName(name: string): string | null {
