@@ -1,9 +1,11 @@
 // Placeholder dashboard with mock data — the real screens are built story by
 // story (navigation shell: US-A3, job overview: US-C2, dashboards: epic G).
+import Link from "next/link";
 import { cookies } from "next/headers";
 import { logoutAction } from "./(auth)/actions";
 import { decodeSession, SESSION_COOKIE } from "@/lib/auth/session";
 import { Button } from "@/components/ui/button";
+import { SupportBanner } from "@/components/support-banner";
 import { ThemeToggle } from "@/components/theme-toggle";
 
 const stats = [
@@ -35,6 +37,7 @@ export default async function Home() {
 
   return (
     <div className="min-h-screen bg-zinc-50 font-sans dark:bg-zinc-950">
+      <SupportBanner />
       <header className="border-b border-zinc-200 bg-white dark:border-zinc-800 dark:bg-zinc-900">
         <div className="mx-auto flex max-w-6xl items-center justify-between px-6 py-4">
           <div className="flex items-baseline gap-3">
@@ -52,6 +55,14 @@ export default async function Home() {
             <ThemeToggle />
             {session && (
               <>
+                {session.user.role === "org-admin" && (
+                  <Link
+                    href="/settings/support-access"
+                    className="text-sm text-zinc-500 underline-offset-4 hover:underline dark:text-zinc-400"
+                  >
+                    Support access
+                  </Link>
+                )}
                 <span className="text-sm text-zinc-600 dark:text-zinc-300">
                   {session.user.name}
                 </span>

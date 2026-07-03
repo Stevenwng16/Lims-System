@@ -2,10 +2,16 @@
 // The mock implementation lives in mock.ts; the real backend plugs in as an
 // adapter implementing this same interface (see decision log, 3 Jul 2026).
 
+// Minimal role model for now: US-A4 (roles & permissions) will replace this
+// with the real permission matrix. "platform-admin" is vendor staff (US-A2
+// AC 3) and carries no customer organisation.
+export type UserRole = "org-admin" | "org-member" | "platform-admin";
+
 export type SessionUser = {
   email: string;
   name: string;
   organisation: string;
+  role: UserRole;
 };
 
 export type LoginResult =
@@ -15,7 +21,9 @@ export type LoginResult =
   | { status: "mfa_required"; mfaToken: string }
   // Generic on purpose — never reveals whether the email exists (AC 3).
   | { status: "invalid" }
-  | { status: "locked" };
+  | { status: "locked" }
+  // Organisation suspended (US-A2 AC 6): clear, neutral message; no detail.
+  | { status: "org-suspended" };
 
 export type MfaResult =
   | { status: "success"; user: SessionUser }

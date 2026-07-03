@@ -1,0 +1,126 @@
+import type { SessionUser } from "./auth/types";
+
+// Single in-memory store behind all mock APIs (auth + platform), so state is
+// consistent across flows (e.g. suspending an org blocks its users' logins).
+// Survives HMR via globalThis; resets on dev-server restart.
+
+export type OrgStatus = "active" | "suspended" | "deactivated";
+export type SubscriptionStatus = "trial" | "active" | "suspended" | "ended";
+
+export type SupportGrant = {
+  grantedAt: number;
+  expiresAt: number;
+  allowAdmin: boolean;
+  sessionActive: boolean;
+};
+
+export type MockOrganisation = {
+  id: string;
+  name: string;
+  status: OrgStatus;
+  statusReason?: string;
+  subscription: SubscriptionStatus;
+  createdAt: string;
+  userCount: number;
+  setupPending: boolean;
+  supportGrant: SupportGrant | null;
+};
+
+export type MockUser = SessionUser & {
+  orgId: string | null; // null for platform (vendor) staff
+  password: string;
+  mfaRequired: boolean;
+  failedAttempts: number;
+  locked: boolean;
+};
+
+export type MockDb = {
+  organisations: Map<string, MockOrganisation>;
+  users: Map<string, MockUser>;
+};
+
+export const DEMO_PASSWORD = "LabDemo2026!!";
+
+function seedDb(): MockDb {
+  const organisations = new Map<string, MockOrganisation>();
+  organisations.set("org-demolab", {
+    id: "org-demolab",
+    name: "Demo Lab",
+    status: "active",
+    subscription: "active",
+    createdAt: "12 May 2026",
+    userCount: 2,
+    setupPending: false,
+    supportGrant: null,
+  });
+  organisations.set("org-labalpha", {
+    id: "org-labalpha",
+    name: "Lab Alpha BV",
+    status: "active",
+    subscription: "trial",
+    createdAt: "24 Jun 2026",
+    userCount: 5,
+    setupPending: false,
+    supportGrant: {
+      grantedAt: Date.now() - 24 * 3600_000,
+      expiresAt: Date.now() + 48 * 3600_000,
+      allowAdmin: false,
+      sessionActive: false,
+    },
+  });
+  organisations.set("org-oldcust", {
+    id: "org-oldcust",
+    name: "OldCust BV",
+    status: "suspended",
+    statusReason: "Non-payment (mock seed)",
+    subscription: "ended",
+    createdAt: "3 Feb 2026",
+    userCount: 3,
+    setupPending: false,
+    supportGrant: null,
+  });
+
+  const users = new Map<string, MockUser>();
+  const base = { password: DEMO_PASSWORD, failedAttempts: 0, locked: false };
+  users.set("admin@demolab.nl", {
+    ...base,
+    email: "admin@demolab.nl",
+    name: "Alex Admin",
+    organisation: "Demo Lab",
+    role: "org-admin",
+    orgId: "org-demolab",
+    mfaRequired: false,
+  });
+  users.set("analyst@demolab.nl", {
+    ...base,
+    email: "analyst@demolab.nl",
+    name: "Sam Analyst",
+    organisation: "Demo Lab",
+    role: "org-member",
+    orgId: "org-demolab",
+    mfaRequired: true,
+  });
+  users.set("user@oldcust.nl", {
+    ...base,
+    email: "user@oldcust.nl",
+    name: "Olga Oldcust",
+    organisation: "OldCust BV",
+    role: "org-member",
+    orgId: "org-oldcust",
+    mfaRequired: false,
+  });
+  users.set("vendor@lims.dev", {
+    ...base,
+    email: "vendor@lims.dev",
+    name: "Vera Vendor",
+    organisation: "LIMS Platform",
+    role: "platform-admin",
+    orgId: null,
+    mfaRequired: false,
+  });
+
+  return { organisations, users };
+}
+
+export const mockDb: MockDb = ((globalThis as Record<string, unknown>).__limsMockDbV2 ??=
+  seedDb()) as MockDb;

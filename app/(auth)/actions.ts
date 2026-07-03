@@ -37,6 +37,12 @@ export async function loginAction(
         error:
           "This account is locked after too many failed attempts. Reset your password to restore access, or contact your administrator.",
       };
+    case "org-suspended":
+      // Clear and neutral (US-A2 AC 6): no reason, no detail.
+      return {
+        error:
+          "Access for your organisation is currently unavailable. Please contact your administrator.",
+      };
     case "invalid":
       // Generic on purpose (AC 3) — must not reveal whether the email exists.
       return { error: "Invalid email or password." };
