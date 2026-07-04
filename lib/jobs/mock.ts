@@ -7,6 +7,7 @@ import {
   type MockSample,
   type SampleAcceptance,
 } from "@/lib/mock-db";
+import { sampleStatus } from "@/lib/batches/progress";
 import { generateJobNumber, generateSampleId } from "./ids";
 import type {
   JobActionResult,
@@ -134,7 +135,6 @@ function buildSample(orgId: string, labId: string, jobNumber: string, receivedAt
     acceptance: null, // decision recorded per sample afterwards (§7.4.3)
     reservationReason: "",
     consultation: null,
-    status: null, // AC 9 — set to "received" on acceptance
     storageLocation: s.storageLocation.trim(),
     voided: false,
     createdAt: new Date().toLocaleDateString("en-GB", { day: "numeric", month: "short", year: "numeric" }),
@@ -176,11 +176,14 @@ function deriveStatus(job: MockJob): JobStatus {
   );
   // No testable samples: all live samples rejected (or none live).
   if (active.length === 0 && live.every((s) => s.acceptance === "rejected")) return "closed";
-  if (active.length > 0 && active.every((s) => s.status === "completed")) return "completed";
+  // Sample statuses are DERIVED from batch membership (US-D1 AC 4, decision
+  // 3 Jul 2026) — the US-C2 aggregation rule itself is unchanged.
+  const statuses = active.map((s) => sampleStatus(job.orgId, s));
+  if (active.length > 0 && statuses.every((st) => st === "completed")) return "completed";
   // Any active sample that has entered/passed a batch means the job has started
   // (a "completed" sample here implies partial progress — the all-completed
   // branch above already returned; audit findings 1/4/9).
-  if (active.some((s) => s.status !== "received" && s.status !== null)) return "in-progress";
+  if (statuses.some((st) => st !== "received" && st !== null)) return "in-progress";
   return "not-started";
 }
 
@@ -391,8 +394,10 @@ export const mockJobApi: JobApi = {
     if (!VALID.includes(acceptance)) return { status: "error", message: "Invalid acceptance decision." };
     // Once a sample has entered batch processing, its acceptance decision is a
     // frozen part of the record — changes go through epic D's workflows, never
-    // a retro-flip that erases lifecycle state (findings 9/26).
-    if (sample.status !== null && sample.status !== "received") {
+    // a retro-flip that erases lifecycle state (findings 9/26). The lifecycle
+    // state is derived from batch membership (US-D1).
+    const lifecycle = sampleStatus(loaded.job.orgId, sample);
+    if (lifecycle !== null && lifecycle !== "received") {
       return {
         status: "error",
         message: "This sample is already in processing — its acceptance decision can no longer be changed here.",
@@ -415,9 +420,9 @@ export const mockJobApi: JobApi = {
 
     sample.acceptance = acceptance;
     sample.reservationReason = acceptance === "accepted-with-reservation" ? reason.trim() : "";
-    // AC 9: status starts at "received" on acceptance; a rejected sample never
-    // enters the lifecycle (its decision is the end state).
-    sample.status = accepting ? (sample.status ?? "received") : null;
+    // AC 9: nothing else to write — the lifecycle status ("received" from the
+    // moment of acceptance) is DERIVED from the acceptance decision and batch
+    // membership (US-D1 decision 3 Jul 2026).
     return { status: "success", jobId };
   },
 

@@ -116,8 +116,13 @@ export const mockLabApi: LabApi = {
       return { status: "error", message: "A reason is required to change the lab's status." };
     }
     if (status === "inactive") {
-      if (lab.hasActiveWork) {
-        // AC 5 — work must not be orphaned.
+      // AC 5 — work must not be orphaned. Since US-D1 batches are real: any
+      // OPEN batch in the lab blocks deactivation, alongside the seed flag
+      // (which still stands in for not-yet-modelled active work).
+      const hasOpenBatch = [...mockDb.batches.values()].some(
+        (b) => b.orgId === orgId && b.labId === labId && b.status === "open",
+      );
+      if (lab.hasActiveWork || hasOpenBatch) {
         return {
           status: "error",
           message:

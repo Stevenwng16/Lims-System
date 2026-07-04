@@ -38,8 +38,9 @@ export type MockLab = {
   description: string;
   status: "active" | "inactive";
   statusReason?: string; // required on every status change (invariant 2)
-  // Mock flag until jobs/batches are real (epics C/D); method and equipment
-  // counts are computed from the live store (US-B1 / US-B3):
+  // Partly-mock flag: since US-D1 the deactivation guard ALSO checks real
+  // open batches; this flag still stands in for other in-progress work until
+  // the full workflow lands (US-D3/D6). Counts are computed live (US-B1/B3).
   hasActiveWork: boolean; // blocks deactivation (US-A5 AC 5)
   // Per-lab workflow settings (US-A7 AC 6) — enforced via US-A4/US-D6.
   analystsMayCreateBatches: boolean;
@@ -189,7 +190,7 @@ export type MockMethod = {
   orgId: string;
   status: "active" | "inactive"; // deactivate, never delete (AC 10)
   statusReason?: string; // required on every status change (invariant 2)
-  usedByBatches: boolean; // mock flag until batches are real (epic D)
+  usedByBatches: boolean; // set by real batch creation since US-D1 (drives AC 9 versioning)
   versions: MethodVersion[]; // append-only
   templates: TemplateVersion[]; // stored via the central attachment facility (ADR-3) — mocked here
 };
@@ -226,9 +227,11 @@ export type SampleAcceptance = "accepted" | "accepted-with-reservation" | "rejec
 // only "mismatch" (does not match description / suitability in doubt) forces it.
 export type DeviationType = "none" | "cosmetic" | "mismatch";
 
-// Sample lifecycle status (US-C1 AC 9): originates here — starts at "received"
-// on acceptance; epic D owns the transitions beyond it. null = no decision yet
-// (a rejected sample never enters the lifecycle, so it stays null).
+// Sample lifecycle status (US-C1 AC 9 / US-D1 AC 4): DERIVED, never stored
+// (decision 3 Jul 2026). Per (sample × method) it is computed from open-batch
+// membership and batch completion; the sample's single status is the
+// aggregate over its requested methods (lib/batches/progress.ts). null = not
+// accepted (a rejected sample never enters the lifecycle).
 export type SampleLifecycleStatus = "received" | "in-batch" | "in-progress" | "completed";
 
 export type MockSample = {
@@ -247,7 +250,8 @@ export type MockSample = {
   acceptance: SampleAcceptance | null; // §7.4.3 hard gate (AC 7); null = awaiting decision
   reservationReason: string; // required when accepted-with-reservation
   consultation: CustomerConsultation | null; // §7.4.3 (AC 8)
-  status: SampleLifecycleStatus | null; // AC 9 — "received" on acceptance; epic D advances it
+  // NOTE: there is deliberately NO stored lifecycle status — it is derived
+  // from batch membership (US-D1 decision 3 Jul 2026, lib/batches/progress.ts).
   storageLocation: string; // §7.4.1 hook (AC 10)
   voided: boolean;
   voidReason?: string;
@@ -272,6 +276,51 @@ export type MockJob = {
   createdAt: string;
   createdBy: string;
   samples: MockSample[];
+};
+
+// Batches (US-D1). A batch belongs to one lab within one organisation
+// (invariant 5), is permanently pinned to one method VERSION (AC 1), and its
+// number is immutable once issued (AC 2). Composition is guarded by a ONE-WAY
+// latch (AC 10): false until the first step-advance or recorded work, then
+// true forever — no code path may ever reset it (hard-never list: a set-back
+// never reopens composition). US-D3 owns steps/void, US-D4 data, US-D6 review.
+
+export type BatchQcEntry = {
+  materialId: string; // the material at its specific lot (US-B2 AC 7)
+  quantity: number; // ≥1; each unit occupies a position (AC 6/7)
+};
+
+export type MockBatchEvent = {
+  id: string;
+  at: string; // ISO datetime
+  by: string;
+  type: "created" | "composition-changed" | "working-copy-generated";
+  summary: string;
+};
+
+export type MockBatch = {
+  id: string; // the batch number (AC 2) — immutable, never reissued
+  orgId: string;
+  labId: string;
+  methodId: string;
+  methodVersion: number; // pinned at creation (AC 1) — never changes
+  templateVersion: number | null; // the template version that method version pins
+  status: "open" | "completed" | "voided"; // void (US-D3) / completion (US-D6)
+  voidReason?: string;
+  currentStepIndex: number; // 0-based into the PINNED version's steps (AC 9)
+  compositionLatched: boolean; // one-way (AC 10) — set true by US-D3/D4, never unset
+  sampleIds: string[]; // ordered client samples
+  qc: BatchQcEntry[]; // one entry per material, with quantity (AC 7)
+  workingCopy: {
+    fileName: string;
+    sizeBytes: number;
+    sha256: string; // ADR-4: checksum recorded at generation
+    generatedAt: string;
+  } | null;
+  reagentLotIds: string[]; // AC 11 design hook — post-MVP story fills it
+  events: MockBatchEvent[]; // append-only (AC 13)
+  createdAt: string; // ISO datetime — permanently carried (AC 13)
+  createdBy: string;
 };
 
 // QC materials (US-B2). The three types are FIXED because each carries its own
@@ -429,6 +478,12 @@ export type MockDb = {
   equipment: Map<string, MockEquipment>;
   equipmentTypes: Map<string, MockEquipmentType>;
   jobs: Map<string, MockJob>;
+  // Batches under org-composite keys ("<orgId>:<batchNumber>") like jobs, so an
+  // org-unique number can never collide across tenants (invariant 5).
+  batches: Map<string, MockBatch>;
+  // Generated working-copy bytes (ADR-3 mock), keyed "<orgId>:<batchNumber>".
+  // Kept out of the batch record so RSC serialization never ships file bytes.
+  batchFiles: Map<string, Uint8Array>;
   // Per-org+per-lab+period job counters and per-job sample counters (US-A7 AC 3
   // sequence isolation). Key formats: "job:<orgId>:<labId>:<period>" and
   // "sample:<orgId>:<jobNumber>". Both org-scoped so tenants never couple.
@@ -1157,7 +1212,6 @@ function seedDb(): MockDb {
     acceptance: null,
     reservationReason: "",
     consultation: null,
-    status: null,
     storageLocation: "",
     voided: false,
     createdAt: "9 Jun 2026",
@@ -1182,14 +1236,13 @@ function seedDb(): MockDb {
     createdAt: "9 Jun 2026",
     createdBy: "labmanager@demolab.nl",
     samples: [
-      sample("MET26-00001.001", "st-1", "Inlet", { acceptance: "accepted", status: "received" }),
+      sample("MET26-00001.001", "st-1", "Inlet", { acceptance: "accepted" }),
       sample("MET26-00001.002", "st-1", "Outlet", {
         condition: "deviation",
         deviationType: "cosmetic",
         deviationNote: "Leaking cap",
         acceptance: "accepted-with-reservation",
         reservationReason: "Minor leakage on receipt; result may be affected.",
-        status: "received",
       }),
       sample("MET26-00001.003", "st-2", "Bank sediment", {
         condition: "deviation",
@@ -1226,32 +1279,90 @@ function seedDb(): MockDb {
   });
   // Not started (samples accepted, still "received"); deadline in the future.
   jobs.set("org-demolab:MET26-00002", metJob("MET26-00002", "BioFoods BV", "2026-07-20", {}, [
-    sample("MET26-00002.001", "st-1", "Batch A", { acceptance: "accepted", status: "received" }),
+    sample("MET26-00002.001", "st-1", "Batch A", { acceptance: "accepted" }),
   ]));
   // In progress + overdue (deadline in the past).
   jobs.set(
     "org-demolab:MET26-00003",
     metJob("MET26-00003", "Stad Rotterdam", "2026-06-25", {}, [
-      sample("MET26-00003.001", "st-2", "Site 3", { acceptance: "accepted", status: "in-progress" }),
+      sample("MET26-00003.001", "st-2", "Site 3", { acceptance: "accepted" }),
     ]),
   );
   // Completed.
   jobs.set(
     "org-demolab:MET26-00004",
     metJob("MET26-00004", "Aqualab Noord", "2026-06-30", {}, [
-      sample("MET26-00004.001", "st-1", "Final", { acceptance: "accepted", status: "completed" }),
+      sample("MET26-00004.001", "st-1", "Final", { acceptance: "accepted" }),
     ]),
   );
   // Voided (US-C1 AC 13) — hidden by default in the overview (AC 10).
   jobs.set(
     "org-demolab:MET26-00005",
     metJob("MET26-00005", "Test entry", "", { voided: true, voidReason: "Registered in error (seed)" }, [
-      sample("MET26-00005.001", "st-1", "X", { acceptance: "accepted", status: "received" }),
+      sample("MET26-00005.001", "st-1", "X", { acceptance: "accepted" }),
     ]),
   );
 
+  // Seed batches (US-D1) so the derived sample statuses have substance:
+  // METB26-0001 is COMPLETED and contains MET26-00004.001 → that sample (and
+  // its job) derives "completed"; METB26-0002 is OPEN past step 1 and contains
+  // MET26-00003.001 → derives "in-progress". Both latched (work recorded).
+  const batches = new Map<string, MockBatch>();
+  batches.set("org-demolab:METB26-0001", {
+    id: "METB26-0001",
+    orgId: "org-demolab",
+    labId: "lab-met",
+    methodId: "m-icpms",
+    methodVersion: 1,
+    templateVersion: 1,
+    status: "completed",
+    currentStepIndex: 4, // final step of the pinned v1 (Report)
+    compositionLatched: true,
+    sampleIds: ["MET26-00004.001"],
+    qc: [{ materialId: "qc-cs1", quantity: 1 }],
+    workingCopy: {
+      fileName: "working_copy_METB26-0001.csv",
+      sizeBytes: 512,
+      sha256: "seed-checksum-no-real-file-0000000000000000000000000000000000000000",
+      generatedAt: "2026-06-21T09:00:00.000Z",
+    },
+    reagentLotIds: [],
+    events: [
+      { id: "bev-1-created", at: "2026-06-21T09:00:00.000Z", by: "labmanager@demolab.nl", type: "created", summary: "Batch created: 1 sample + 1 QC position (m-icpms v1)" },
+    ],
+    createdAt: "2026-06-21T09:00:00.000Z",
+    createdBy: "labmanager@demolab.nl",
+  });
+  batches.set("org-demolab:METB26-0002", {
+    id: "METB26-0002",
+    orgId: "org-demolab",
+    labId: "lab-met",
+    methodId: "m-icpms",
+    methodVersion: 1,
+    templateVersion: 1,
+    status: "open",
+    currentStepIndex: 2, // work under way (Measurement) → composition latched
+    compositionLatched: true,
+    sampleIds: ["MET26-00003.001"],
+    qc: [{ materialId: "qc-blk", quantity: 2 }],
+    workingCopy: {
+      fileName: "working_copy_METB26-0002.csv",
+      sizeBytes: 498,
+      sha256: "seed-checksum-no-real-file-0000000000000000000000000000000000000000",
+      generatedAt: "2026-06-28T10:15:00.000Z",
+    },
+    reagentLotIds: [],
+    events: [
+      { id: "bev-2-created", at: "2026-06-28T10:15:00.000Z", by: "labmanager@demolab.nl", type: "created", summary: "Batch created: 1 sample + 2 QC positions (m-icpms v1)" },
+    ],
+    createdAt: "2026-06-28T10:15:00.000Z",
+    createdBy: "labmanager@demolab.nl",
+  });
+  const batchFiles = new Map<string, Uint8Array>(); // seed working copies keep metadata only
+
   // Counters consistent with the seed (5 Metals jobs in 2026; sample seq per job).
   sequences.set("job:org-demolab:lab-met:2026", 5);
+  sequences.set("batch:org-demolab:lab-met:2026", 2);
   sequences.set("sample:org-demolab:MET26-00001", 3);
   sequences.set("sample:org-demolab:MET26-00002", 1);
   sequences.set("sample:org-demolab:MET26-00003", 1);
@@ -1268,11 +1379,13 @@ function seedDb(): MockDb {
     equipment,
     equipmentTypes,
     jobs,
+    batches,
+    batchFiles,
     sequences,
   };
 }
 
-export const mockDb: MockDb = ((globalThis as Record<string, unknown>).__limsMockDbV16 ??=
+export const mockDb: MockDb = ((globalThis as Record<string, unknown>).__limsMockDbV17 ??=
   seedDb()) as MockDb;
 
 export function getOrgSettings(orgId: string): OrgSettings {

@@ -3,8 +3,8 @@
 import Link from "next/link";
 import { useEffect, useState } from "react";
 import { useActionState } from "react";
-import type { JobStatus } from "@/lib/jobs";
-import type { MockJob, MockSample, SampleAcceptance } from "@/lib/mock-db";
+import type { JobStatus, JobView, SampleView } from "@/lib/jobs";
+import type { MockSample, SampleAcceptance } from "@/lib/mock-db";
 import {
   addSampleAction,
   addSampleAttachmentAction,
@@ -58,7 +58,9 @@ const JOB_STATUS: Record<JobStatus, { label: string; dot: string }> = {
   closed: { label: "Closed", dot: "⚫" },
 };
 
-function sampleStatusLabel(s: MockSample): string {
+// The lifecycle status on a SampleView is DERIVED server-side from batch
+// membership (US-D1) — the page decorates it before rendering.
+function sampleStatusLabel(s: SampleView): string {
   if (s.voided) return "Voided";
   if (s.acceptance === "rejected") return "Rejected";
   if (s.acceptance === null) return "Awaiting decision";
@@ -432,7 +434,7 @@ export function JobDetail({
   sampleTypes,
   labMethods,
 }: {
-  job: MockJob;
+  job: JobView;
   jobLabel: string;
   labName: string;
   typeNames: Record<string, string>;

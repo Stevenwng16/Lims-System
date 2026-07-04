@@ -1,5 +1,6 @@
 import { notFound } from "next/navigation";
-import { deriveJobStatus, isJobOverdue, jobApi } from "@/lib/jobs";
+import { sampleStatus } from "@/lib/batches/progress";
+import { deriveJobStatus, isJobOverdue, jobApi, type JobView } from "@/lib/jobs";
 import { labApi } from "@/lib/labs";
 import { methodApi } from "@/lib/methods";
 import { getOrgSettings, type MockJob } from "@/lib/mock-db";
@@ -71,6 +72,12 @@ export default async function JobDetailPage({ params }: { params: Promise<{ id: 
   const actor = await resolveJobActor();
   const job = await jobApi.getJob(actor, id);
   if (!job) notFound();
+  // Decorate samples with the DERIVED lifecycle status (US-D1 decision
+  // 3 Jul 2026) — the stored record carries none.
+  const jobView: JobView = {
+    ...job,
+    samples: job.samples.map((s) => ({ ...s, status: sampleStatus(job.orgId, s) })),
+  };
 
   const settings = getOrgSettings(actor.orgId);
   const typeNames: Record<string, string> = {};
@@ -112,7 +119,7 @@ export default async function JobDetailPage({ params }: { params: Promise<{ id: 
       </Breadcrumb>
 
       <JobDetail
-        job={job}
+        job={jobView}
         jobLabel={settings.jobLabel}
         labName={labName}
         typeNames={typeNames}

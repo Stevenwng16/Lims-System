@@ -3,6 +3,7 @@ import {
   Building2,
   ClipboardList,
   FlaskRound,
+  Layers,
   Microscope,
   Settings,
   ShieldCheck,
@@ -29,6 +30,8 @@ export type NavItem = {
 
 export const mainNav: NavItem[] = [
   { title: "Jobs", href: "/jobs", icon: ClipboardList, requires: "view-data" },
+  // Batches (US-D1): creation now; US-D2 turns the list into the work queue.
+  { title: "Batches", href: "/batches", icon: Layers, requires: "view-data" },
   // The US-A3 "Quality" section: QC materials (US-B2) + Equipment (US-B3).
   // Analysts need Equipment too — they log the routine checks (view-data
   // covers every org role; writes are gated server-side per US-B3).

@@ -53,6 +53,24 @@ export function generateJobNumber(orgId: string, labId: string, receivedAt: stri
   });
 }
 
+/** Consume and return the batch number (US-D1 AC 2; called once, on creation).
+ * Same sequence isolation as jobs: per organisation + lab + reset period. */
+export function generateBatchNumber(orgId: string, labId: string): string {
+  const lab = mockDb.labs.get(labId);
+  if (!lab) throw new Error("Unknown lab");
+  const reset = getOrgSettings(orgId).identifiers.sequenceReset;
+  const { year, month } = dateTokens("");
+  const key = `batch:${orgId}:${labId}:${periodKey(reset, year, month)}`;
+  const next = (mockDb.sequences.get(key) ?? 0) + 1;
+  mockDb.sequences.set(key, next);
+  return renderTemplate(getOrgSettings(orgId).identifiers.batchFormat, {
+    lab: lab.code,
+    year,
+    month,
+    seq: next,
+  });
+}
+
 /** Consume and return the next sample ID under a job (restarts per job). The
  * counter key is org-scoped so two organisations sharing a rendered job number
  * never share a sample sequence (audit findings 2/8/12 — invariant 5). */

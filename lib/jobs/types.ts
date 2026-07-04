@@ -3,6 +3,7 @@ import type {
   MockJob,
   MockSample,
   SampleAcceptance,
+  SampleLifecycleStatus,
 } from "@/lib/mock-db";
 import type { OrgRole } from "@/lib/permissions";
 
@@ -123,3 +124,9 @@ export function sampleCanBatch(sample: MockSample): boolean {
   if (sample.voided) return false;
   return sample.acceptance === "accepted" || sample.acceptance === "accepted-with-reservation";
 }
+
+// Presentation shapes: the stored sample carries NO lifecycle status (US-D1
+// decision 3 Jul 2026) — pages decorate it with the derived value before
+// handing it to client components.
+export type SampleView = MockSample & { status: SampleLifecycleStatus | null };
+export type JobView = Omit<MockJob, "samples"> & { samples: SampleView[] };
