@@ -8,15 +8,18 @@ import {
   type MockBatch,
   type MockBatchEvent,
   type MockJob,
+  type MockMeasurementRecord,
   type MockMethod,
   type MockSample,
   type QcType,
+  type ResultValue,
 } from "@/lib/mock-db";
 import { equipmentAvailability } from "@/lib/equipment";
 import { generateBatchNumber } from "@/lib/jobs/ids";
 import { sampleCanBatch } from "@/lib/jobs/types";
 import { qcMaterialsForMethod } from "@/lib/qc";
 import { openBatchOfMethodContaining, sampleMethodProgress } from "./progress";
+import { parseNumericInput } from "./parse";
 import type {
   BatchActionResult,
   BatchActor,
@@ -24,9 +27,14 @@ import type {
   BatchCompositionInput,
   BatchDetail,
   BatchListRow,
+  BulkEntry,
+  BulkPreviewCell,
   EligibleSample,
   EquipmentOption,
   MethodBatchOptions,
+  ResultTarget,
+  ResultValueInput,
+  ResultsGrid,
   StepRailEntry,
   StepRequiredType,
 } from "./types";
@@ -600,6 +608,7 @@ export const mockBatchApi: BatchApi = {
       qc: validated.qc,
       workingCopy: null,
       worksheets: [], // US-D4 AC 9 versions; gates the final step (US-D3 AC 5)
+      results: [], // ADR-2 measurement records (US-D4) — append-only
       reagentLotIds: [], // AC 11 hook
       events: [],
       createdAt: new Date().toISOString(),
@@ -906,7 +915,463 @@ export const mockBatchApi: BatchApi = {
     );
     return { status: "success", batchId };
   },
+
+  // ---- US-D4: manual data entry ------------------------------------------
+
+  async resultsGrid(actor, batchId): Promise<ResultsGrid | null> {
+    const batch = mockDb.batches.get(batchKey(actor.orgId, batchId));
+    if (!batch || batch.orgId !== actor.orgId || !canSeeLab(actor, batch.labId)) return null;
+    const method = mockDb.methods.get(batch.methodId);
+    if (!method) return null;
+    const pinned = methodVersionByNumber(method, batch.methodVersion);
+
+    const rows: ResultsGrid["rows"] = [
+      ...batch.sampleIds.map((sampleId) => {
+        const found = findSample(actor.orgId, sampleId);
+        return {
+          targetType: "sample" as const,
+          targetId: sampleId,
+          label: sampleId,
+          sub: found ? `${found.job.customer} — ${found.sample.description}` : "",
+        };
+      }),
+      ...batch.qc.map((entry) => {
+        const material = mockDb.qcMaterials.get(entry.materialId);
+        return {
+          targetType: "qc" as const,
+          targetId: entry.materialId,
+          label: rowLabelFor(batch, { targetType: "qc", targetId: entry.materialId }),
+          sub: `${material?.name ?? ""}${material?.lotNumber ? ` (lot ${material.lotNumber})` : ""}`,
+        };
+      }),
+    ];
+
+    // Chains newest-first per cell (AC 8); the head is the current value.
+    const cells: ResultsGrid["cells"] = {};
+    for (const record of batch.results) {
+      const key = cellKey({ targetType: record.targetType, targetId: record.targetId }, record.analyteId);
+      const cell = (cells[key] ??= { current: null, chain: [] });
+      cell.chain.unshift(record);
+      cell.current = cell.chain[0];
+    }
+
+    const closed = entryClosed(batch);
+    return {
+      entryOpen: closed === null,
+      entryClosedReason: closed,
+      columns: pinned.analytes.map((a) => ({ analyteId: a.id, name: a.name, unit: a.unit, loq: a.loq })),
+      rows,
+      cells,
+      qualifiers: getOrgSettings(actor.orgId)
+        .resultQualifiers.filter((q) => q.active)
+        .map((q) => ({ id: q.id, name: q.name })),
+      filled: Object.keys(cells).length,
+      total: rows.length * pinned.analytes.length,
+      worksheetCount: batch.worksheets.length,
+    };
+  },
+
+  async enterResult(actor, batchId, target, analyteId, input, supersedeReason): Promise<BatchActionResult> {
+    const loaded = loadForEntry(actor, batchId);
+    if ("error" in loaded) return { status: "error", message: loaded.error };
+    const { batch, pinned } = loaded;
+
+    const targetError = validateTarget(batch, pinned, target, analyteId);
+    if (targetError) return { status: "error", message: targetError };
+    const validated = validateResultInput(batch.orgId, input);
+    if ("error" in validated) return { status: "error", message: validated.error };
+
+    const existing = currentByCell(batch).get(cellKey(target, analyteId)) ?? null;
+    const reason = supersedeReason.trim();
+    // AC 8: correction = supersede, ALWAYS with a reason; the original stays.
+    if (existing && !reason) {
+      return { status: "error", message: "This cell already has a value — a correction requires a reason." };
+    }
+
+    const analyteName = pinned.analytes.find((a) => a.id === analyteId)?.name ?? analyteId;
+    appendRecord(
+      batch,
+      actor,
+      target,
+      analyteId,
+      validated.value,
+      "manual",
+      null,
+      existing,
+      existing ? reason : null,
+      rowLabelFor(batch, target),
+      analyteName,
+    );
+    return { status: "success", batchId };
+  },
+
+  async previewBulk(actor, batchId, entries) {
+    const loaded = loadForEntry(actor, batchId);
+    if ("error" in loaded) return { status: "error", message: loaded.error };
+    if (entries.length === 0) return { status: "error", message: "The pasted block contains no values." };
+    if (entries.length > 500) return { status: "error", message: "The pasted block is too large (max 500 cells)." };
+    return { status: "success", cells: previewEntries(loaded.batch, loaded.pinned, entries) };
+  },
+
+  async confirmBulk(actor, batchId, entries): Promise<BatchActionResult> {
+    const loaded = loadForEntry(actor, batchId);
+    if ("error" in loaded) return { status: "error", message: loaded.error };
+    const { batch, pinned } = loaded;
+    if (entries.length > 500) return { status: "error", message: "The pasted block is too large (max 500 cells)." };
+
+    // Re-validated server-side at confirm; only accepted cells are written,
+    // rejected/occupied cells stay empty for manual handling (AC 13).
+    let written = 0;
+    for (const cell of previewEntries(batch, pinned, entries)) {
+      if (cell.outcome.kind !== "accepted") continue;
+      const input = interpretRawCell(batch.orgId, cell.raw);
+      if ("error" in input) continue;
+      const validated = validateResultInput(batch.orgId, input);
+      if ("error" in validated) continue;
+      const analyteName = pinned.analytes.find((a) => a.id === cell.analyteId)?.name ?? cell.analyteId;
+      appendRecord(batch, actor, cell.target, cell.analyteId, validated.value, "manual", null, null, null, cell.rowLabel, analyteName);
+      written += 1;
+    }
+    if (written === 0) return { status: "error", message: "No accepted cells to write — fix the rejected ones and try again." };
+    return { status: "success", batchId };
+  },
+
+  async previewWorksheet(actor, batchId) {
+    const loaded = loadForEntry(actor, batchId);
+    if ("error" in loaded) return { status: "error", message: loaded.error };
+    const parsed = parseWorksheetEntries(loaded.batch, loaded.pinned);
+    if ("error" in parsed) return { status: "error", message: parsed.error };
+    return {
+      status: "success",
+      worksheetVersion: parsed.worksheetVersion,
+      cells: previewEntries(loaded.batch, loaded.pinned, parsed.entries),
+      notices: parsed.notices,
+    };
+  },
+
+  async confirmWorksheet(actor, batchId): Promise<BatchActionResult> {
+    const loaded = loadForEntry(actor, batchId);
+    if ("error" in loaded) return { status: "error", message: loaded.error };
+    const { batch, pinned } = loaded;
+    // The server RE-READS the worksheet itself — origin "worksheet" always
+    // means "this value came from that file version", never a client claim.
+    const parsed = parseWorksheetEntries(batch, pinned);
+    if ("error" in parsed) return { status: "error", message: parsed.error };
+
+    let written = 0;
+    for (const cell of previewEntries(batch, pinned, parsed.entries)) {
+      if (cell.outcome.kind !== "accepted") continue;
+      const input = interpretRawCell(batch.orgId, cell.raw);
+      if ("error" in input) continue;
+      const validated = validateResultInput(batch.orgId, input);
+      if ("error" in validated) continue;
+      const analyteName = pinned.analytes.find((a) => a.id === cell.analyteId)?.name ?? cell.analyteId;
+      appendRecord(
+        batch,
+        actor,
+        cell.target,
+        cell.analyteId,
+        validated.value,
+        "worksheet",
+        parsed.worksheetVersion,
+        null,
+        null,
+        cell.rowLabel,
+        analyteName,
+      );
+      written += 1;
+    }
+    if (written === 0) {
+      return { status: "error", message: "Nothing to write — every readable cell is occupied or rejected." };
+    }
+    return { status: "success", batchId };
+  },
 };
+
+// ---- US-D4: the results grid (the first ADR-2 records) ---------------------
+
+function cellKey(target: ResultTarget, analyteId: string): string {
+  return `${target.targetType}:${target.targetId}:${analyteId}`;
+}
+
+/** Human form of a value for events/previews — never a substitute for the
+ * stored record. */
+export function resultDisplay(value: ResultValue): string {
+  switch (value.kind) {
+    case "numeric":
+      return value.value;
+    case "censored":
+      return `${value.qualifier}${value.boundary}`;
+    case "qualifier":
+      return value.label;
+    case "text":
+      return value.text;
+    case "no-result":
+      return "no result";
+  }
+}
+
+/** Entry window (AC 1/10): from creation until Awaiting review; never on a
+ * voided or completed batch. Returns the human reason when closed. */
+function entryClosed(batch: MockBatch): string | null {
+  if (batch.status === "open") return null;
+  if (batch.status === "awaiting-review") {
+    return "Entry is closed during review — the reviewer judges a stable snapshot; a set-back (US-D3) reopens it.";
+  }
+  return batch.status === "voided"
+    ? "This batch is voided — its records are frozen."
+    : "This batch is completed — its records are frozen.";
+}
+
+function validateTarget(
+  batch: MockBatch,
+  pinned: MethodVersion,
+  target: ResultTarget,
+  analyteId: string,
+): string | null {
+  if (!pinned.analytes.some((a) => a.id === analyteId)) {
+    return "Unknown analyte for this batch's pinned method version.";
+  }
+  if (target.targetType === "sample") {
+    return batch.sampleIds.includes(target.targetId) ? null : "That sample is not in this batch.";
+  }
+  if (target.targetType === "qc") {
+    return batch.qc.some((e) => e.materialId === target.targetId)
+      ? null
+      : "That QC entry is not in this batch.";
+  }
+  return "Invalid result target.";
+}
+
+/** AC 2/3/5 — turn raw form input into a stored ResultValue, or refuse. */
+function validateResultInput(orgId: string, input: ResultValueInput): { value: ResultValue } | { error: string } {
+  switch (input.kind) {
+    case "numeric": {
+      const parsed = parseNumericInput(input.raw);
+      return parsed.ok ? { value: { kind: "numeric", value: parsed.canonical } } : { error: parsed.message };
+    }
+    case "censored": {
+      if (input.qualifier !== "<" && input.qualifier !== ">") {
+        return { error: "A censored value uses < or >." };
+      }
+      const parsed = parseNumericInput(input.boundaryRaw);
+      if (!parsed.ok) return { error: `Boundary: ${parsed.message}` };
+      return { value: { kind: "censored", qualifier: input.qualifier, boundary: parsed.canonical } };
+    }
+    case "qualifier": {
+      // New records may only use ACTIVE list entries; historical records keep
+      // their snapshotted label regardless of later deactivation (AC 3).
+      const entry = getOrgSettings(orgId).resultQualifiers.find((q) => q.id === input.qualifierId);
+      if (!entry) return { error: "Unknown qualifier." };
+      if (!entry.active) return { error: `The qualifier "${entry.name}" is deactivated — pick an active one.` };
+      return { value: { kind: "qualifier", qualifierId: entry.id, label: entry.name } };
+    }
+    case "text": {
+      const text = input.text.trim();
+      if (!text) return { error: "Enter the qualitative result text." };
+      if (text.length > 200) return { error: "Qualitative text is limited to 200 characters." };
+      return { value: { kind: "text", text } };
+    }
+    case "no-result": {
+      const reason = input.reason.trim();
+      if (!reason) return { error: "A no-result requires a reason (it closes this cell out)." };
+      return { value: { kind: "no-result", reason } };
+    }
+    default:
+      return { error: "Invalid result input." };
+  }
+}
+
+/** Newest record per cell — the current value is a pure view (decision). */
+function currentByCell(batch: MockBatch): Map<string, MockMeasurementRecord> {
+  const map = new Map<string, MockMeasurementRecord>();
+  for (const record of batch.results) {
+    // results[] is append-only in entry order: later wins.
+    map.set(cellKey({ targetType: record.targetType, targetId: record.targetId }, record.analyteId), record);
+  }
+  return map;
+}
+
+function appendRecord(
+  batch: MockBatch,
+  actor: BatchActor,
+  target: ResultTarget,
+  analyteId: string,
+  value: ResultValue,
+  origin: MockMeasurementRecord["origin"],
+  worksheetVersion: number | null,
+  supersedes: MockMeasurementRecord | null,
+  supersedeReason: string | null,
+  rowLabel: string,
+  analyteName: string,
+): void {
+  const record: MockMeasurementRecord = {
+    id: `res-${crypto.randomUUID()}`,
+    targetType: target.targetType,
+    targetId: target.targetId,
+    analyteId,
+    methodId: batch.methodId,
+    methodVersion: batch.methodVersion,
+    value,
+    origin,
+    worksheetVersion,
+    enteredBy: actor.email,
+    enteredAt: new Date().toISOString(),
+    supersedes: supersedes?.id ?? null,
+    supersedeReason,
+    validity: "pending", // US-D6 owns the transition
+  };
+  batch.results.push(record); // append-only — nothing is ever altered
+  addEvent(
+    batch,
+    actor,
+    supersedes ? "result-superseded" : "result-entered",
+    supersedes
+      ? `Result ${rowLabel} · ${analyteName}: ${resultDisplay(supersedes.value)} → ${resultDisplay(value)} — ${supersedeReason} (${origin})`
+      : `Result ${rowLabel} · ${analyteName}: ${resultDisplay(value)} (${origin})`,
+  );
+}
+
+/** Shared raw-cell interpretation for paste (AC 13) and worksheet (AC 14):
+ * "<x"/">x" → censored, an active org-qualifier label → qualifier, otherwise
+ * numeric under the full AC 5 rules. Text / no-result stay manual-only. */
+function interpretRawCell(orgId: string, raw: string): ResultValueInput | { error: string } {
+  const trimmed = raw.trim();
+  if (!trimmed) return { error: "Empty cell." };
+  if (trimmed.startsWith("<") || trimmed.startsWith(">")) {
+    return {
+      kind: "censored",
+      qualifier: trimmed[0] as "<" | ">",
+      boundaryRaw: trimmed.slice(1).trim(),
+    };
+  }
+  const qualifier = getOrgSettings(orgId).resultQualifiers.find(
+    (q) => q.active && q.name.trim().toLowerCase() === trimmed.toLowerCase(),
+  );
+  if (qualifier) return { kind: "qualifier", qualifierId: qualifier.id };
+  return { kind: "numeric", raw: trimmed };
+}
+
+function rowLabelFor(batch: MockBatch, target: ResultTarget): string {
+  if (target.targetType === "sample") return target.targetId;
+  const entry = batch.qc.find((e) => e.materialId === target.targetId);
+  const code = mockDb.qcMaterials.get(target.targetId)?.code ?? target.targetId;
+  return entry && entry.quantity > 1 ? `${code} ×${entry.quantity}` : code;
+}
+
+/** Parse the latest worksheet's Results sheet (AC 14). The mock reads the
+ * CSV convention (ID column + one column per analyte — US-B1 AC 6); the real
+ * backend reads the same convention from the XLSX Results sheet. */
+function parseWorksheetEntries(
+  batch: MockBatch,
+  pinned: MethodVersion,
+): { entries: BulkEntry[]; notices: string[]; worksheetVersion: number } | { error: string } {
+  if (batch.worksheets.length === 0) {
+    return { error: "No worksheet attached yet — upload it on the Files tab first." };
+  }
+  const latest = batch.worksheets[batch.worksheets.length - 1];
+  const bytes = mockDb.batchFiles.get(`${batch.orgId}:ws:${latest.id}`);
+  if (!bytes) {
+    return { error: "The worksheet file is not readable (seed demo) — enter results manually or via paste." };
+  }
+  const text = Buffer.from(bytes).toString("utf8");
+  const lines = text.split(/\r?\n/).filter((l) => l.trim() !== "");
+  if (lines.length < 2) {
+    return { error: "No readable Results sheet in the worksheet — falling back to manual entry or paste." };
+  }
+  // Delimiter: whichever splits the header into the most cells.
+  const delimiter = ["\t", ";", ","].sort(
+    (a, b) => lines[0].split(b).length - lines[0].split(a).length,
+  )[0];
+  const header = lines[0].split(delimiter).map((h) => h.trim());
+  const notices: string[] = [];
+
+  // Header columns after the first map to analytes by name (ci), a
+  // " (unit)" suffix tolerated.
+  const columnAnalytes: (string | null)[] = header.slice(1).map((h) => {
+    const name = h.replace(/\s*\(.*\)\s*$/, "").trim().toLowerCase();
+    return pinned.analytes.find((a) => a.name.trim().toLowerCase() === name)?.id ?? null;
+  });
+  if (!columnAnalytes.some((id) => id !== null)) {
+    return { error: "No readable Results sheet: no column matches this method's analytes — falling back to manual entry or paste." };
+  }
+  const ignored = header.slice(1).filter((_, i) => columnAnalytes[i] === null);
+  if (ignored.length > 0) notices.push(`Ignored columns (no matching analyte): ${ignored.join(", ")}`);
+
+  const sampleIds = new Map(batch.sampleIds.map((id) => [id.toLowerCase(), id] as const));
+  const qcByCode = new Map(
+    batch.qc.map((e) => [(mockDb.qcMaterials.get(e.materialId)?.code ?? "").toLowerCase(), e.materialId] as const),
+  );
+  const entries: BulkEntry[] = [];
+  let unknownRows = 0;
+  for (const line of lines.slice(1)) {
+    const cells = line.split(delimiter).map((c) => c.trim());
+    const rowId = cells[0]?.toLowerCase() ?? "";
+    const target: ResultTarget | null = sampleIds.has(rowId)
+      ? { targetType: "sample", targetId: sampleIds.get(rowId)! }
+      : qcByCode.has(rowId)
+        ? { targetType: "qc", targetId: qcByCode.get(rowId)! }
+        : null;
+    if (!target) {
+      unknownRows += 1;
+      continue;
+    }
+    columnAnalytes.forEach((analyteId, i) => {
+      const raw = cells[i + 1] ?? "";
+      if (analyteId && raw.trim() !== "") entries.push({ target, analyteId, raw });
+    });
+  }
+  if (unknownRows > 0) notices.push(`${unknownRows} row(s) match no sample or QC code of this batch and were ignored.`);
+  if (entries.length === 0) {
+    return { error: "The Results sheet contains no values for this batch — falling back to manual entry or paste." };
+  }
+  return { entries, notices, worksheetVersion: batch.worksheets.length };
+}
+
+/** AC 5/13: per-cell verdicts for a set of raw entries — never writes. */
+function previewEntries(batch: MockBatch, pinned: MethodVersion, entries: BulkEntry[]): BulkPreviewCell[] {
+  const current = currentByCell(batch);
+  const seen = new Set<string>();
+  return entries.map((entry) => {
+    const base = {
+      target: entry.target,
+      rowLabel: rowLabelFor(batch, entry.target),
+      analyteId: entry.analyteId,
+      raw: entry.raw,
+    };
+    const targetError = validateTarget(batch, pinned, entry.target, entry.analyteId);
+    if (targetError) return { ...base, outcome: { kind: "rejected" as const, message: targetError } };
+    const key = cellKey(entry.target, entry.analyteId);
+    if (seen.has(key)) {
+      return { ...base, outcome: { kind: "rejected" as const, message: "Duplicate cell in the block." } };
+    }
+    seen.add(key);
+    // Occupied cells are never overwritten by a bulk flow — a correction
+    // needs its own reason (AC 8; decision 4 Jul 2026).
+    if (current.has(key)) return { ...base, outcome: { kind: "occupied" as const } };
+    const input = interpretRawCell(batch.orgId, entry.raw);
+    if ("error" in input) return { ...base, outcome: { kind: "rejected" as const, message: input.error } };
+    const validated = validateResultInput(batch.orgId, input);
+    if ("error" in validated) return { ...base, outcome: { kind: "rejected" as const, message: validated.error } };
+    return { ...base, outcome: { kind: "accepted" as const, display: resultDisplay(validated.value) } };
+  });
+}
+
+/** Load-and-gate shared by all entry mutations. */
+function loadForEntry(
+  actor: BatchActor,
+  batchId: string,
+): { batch: MockBatch; pinned: MethodVersion } | { error: string } {
+  const batch = mockDb.batches.get(batchKey(actor.orgId, batchId));
+  if (!batch || batch.orgId !== actor.orgId) return { error: "Unknown batch." };
+  const denied = canWorkBatch(actor, batch);
+  if (denied) return { error: denied };
+  const closed = entryClosed(batch);
+  if (closed) return { error: closed };
+  const method = mockDb.methods.get(batch.methodId);
+  if (!method) return { error: "Unknown method." };
+  return { batch, pinned: methodVersionByNumber(method, batch.methodVersion) };
+}
 
 /** US-C3 AC 10 / US-D3 AC 1: the batches containing any of a job's samples,
  * for the job detail's Batches tab. Same-org only (invariant 5). */

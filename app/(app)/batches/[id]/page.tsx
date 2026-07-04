@@ -36,6 +36,9 @@ export default async function BatchDetailPage({ params }: { params: Promise<{ id
     (actor.role === "admin" || actor.isSupport || actor.labs.includes(detail.labName));
   const downloadable = (await batchApi.workingCopyFile(actor, id)) !== null;
   const jobLabel = getOrgSettings(actor.orgId).jobLabel;
+  // US-D4: the results grid (entry rights = same canWork rule; the grid
+  // itself is visible to every role that sees the batch, read-only included).
+  const grid = await batchApi.resultsGrid(actor, id);
 
   return (
     <div className="mx-auto max-w-4xl space-y-6">
@@ -52,6 +55,7 @@ export default async function BatchDetailPage({ params }: { params: Promise<{ id
       </Breadcrumb>
       <BatchDetailClient
         detail={detail}
+        grid={grid}
         canEdit={canEdit}
         canWork={canWork}
         canManage={canManage}

@@ -3,7 +3,8 @@
 import Link from "next/link";
 import { useEffect, useState } from "react";
 import { useActionState } from "react";
-import type { BatchDetail, StepRailEntry } from "@/lib/batches";
+import type { BatchDetail, ResultsGrid, StepRailEntry } from "@/lib/batches";
+import { ResultsGridSection } from "./results-grid";
 import {
   completeStepAction,
   setBackAction,
@@ -468,6 +469,7 @@ type DialogState = { kind: "complete"; step: StepRailEntry } | { kind: "set-back
 
 export function BatchDetailClient({
   detail,
+  grid,
   canEdit,
   canWork,
   canManage,
@@ -475,6 +477,7 @@ export function BatchDetailClient({
   jobLabel,
 }: {
   detail: BatchDetail;
+  grid: ResultsGrid | null;
   canEdit: boolean;
   canWork: boolean;
   canManage: boolean;
@@ -541,6 +544,7 @@ export function BatchDetailClient({
         <TabsList>
           <TabsTrigger value="samples">Samples</TabsTrigger>
           <TabsTrigger value="steps">Steps</TabsTrigger>
+          <TabsTrigger value="results">Results</TabsTrigger>
           <TabsTrigger value="files">Files</TabsTrigger>
           <TabsTrigger value="history">History</TabsTrigger>
         </TabsList>
@@ -712,6 +716,15 @@ export function BatchDetailClient({
               </p>
             </CardContent>
           </Card>
+        </TabsContent>
+
+        {/* Results (US-D4) — the manual entry grid on the ADR-2 record model. */}
+        <TabsContent value="results" className="mt-4">
+          {grid ? (
+            <ResultsGridSection batchId={batch.id} grid={grid} canEnter={canWork} />
+          ) : (
+            <p className="text-sm text-muted-foreground">The results grid could not be loaded.</p>
+          )}
         </TabsContent>
 
         {/* Files (AC 2 / AC 5 gate) */}

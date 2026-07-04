@@ -290,6 +290,45 @@ export type BatchQcEntry = {
   quantity: number; // ≥1; each unit occupies a position (AC 6/7)
 };
 
+// Measurement records (US-D4, decisions 4 Jul 2026 — ADR-2 made concrete).
+// Append-only rows: a correction is a NEW record with a mandatory reason and
+// a `supersedes` pointer; the current cell value is the newest record for
+// that (target × analyte) — a pure view. `validity` is flipped ONLY by US-D6
+// review (each flip an audit event); nothing here is ever hand-edited.
+
+export type ResultOrigin = "manual" | "worksheet" | "import";
+
+// ADR-2 value types (AC 2). Numeric values are canonical decimal STRINGS with
+// the precision exactly as entered — "0.010" never collapses to 0.01
+// (decision 4 Jul 2026; CLAUDE.md hard rule). Floats never exist.
+export type ResultValue =
+  | { kind: "numeric"; value: string }
+  | { kind: "censored"; qualifier: "<" | ">"; boundary: string }
+  // An org-list qualifier (US-A7 AC 9, e.g. "n.b."): the label is SNAPSHOTTED
+  // so deactivating or renaming the list entry never touches history (AC 3).
+  | { kind: "qualifier"; qualifierId: string; label: string }
+  | { kind: "text"; text: string }
+  | { kind: "no-result"; reason: string };
+
+export type MockMeasurementRecord = {
+  id: string;
+  // Links (AC 7). orgId lives on the owning batch; the real backend puts
+  // organisation_id on this table too (invariant 5).
+  targetType: "sample" | "qc"; // QC rows use the SAME model (ADR-2)
+  targetId: string; // sample ID, or QC material id
+  analyteId: string; // analyte of the PINNED method version
+  methodId: string;
+  methodVersion: number;
+  value: ResultValue;
+  origin: ResultOrigin;
+  worksheetVersion: number | null; // set when origin = "worksheet" (AC 14)
+  enteredBy: string; // automatic attribution (invariant 6)
+  enteredAt: string; // ISO
+  supersedes: string | null; // the record this one corrects (AC 8)
+  supersedeReason: string | null; // mandatory when superseding
+  validity: "pending" | "valid" | "rejected"; // US-D6 owns transitions
+};
+
 // One list is the whole workflow history (US-D3 decision 3 Jul 2026): every
 // transition is appended here, and the Steps rail + History tab are just two
 // renderings of it. Structured payloads make the records queryable proof —
@@ -305,7 +344,9 @@ export type MockBatchEvent = {
     | "step-completed"
     | "set-back"
     | "voided"
-    | "worksheet-uploaded";
+    | "worksheet-uploaded"
+    | "result-entered"
+    | "result-superseded";
   summary: string;
   /** step-completed: which step (a redo appends a NEW record, AC 6). */
   step?: { index: number; id: string; name: string };
@@ -341,6 +382,9 @@ export type MockBatch = {
   // Completed-worksheet versions (US-D4 AC 9, gate consumed by US-D3 AC 5):
   // append-only — replacing uploads a NEW version, the last entry is current.
   worksheets: Attachment[];
+  // ADR-2 measurement records (US-D4 AC 7) — append-only; a supersede is a
+  // NEW row, the chain is walked via `supersedes` pointers.
+  results: MockMeasurementRecord[];
   reagentLotIds: string[]; // AC 11 design hook — post-MVP story fills it
   events: MockBatchEvent[]; // append-only (AC 13)
   createdAt: string; // ISO datetime — permanently carried (AC 13)
@@ -1378,6 +1422,13 @@ function seedDb(): MockDb {
       { id: "bev-1-ws", at: "2026-06-24T15:40:00.000Z", by: "analyst@demolab.nl", type: "worksheet-uploaded", summary: "Completed worksheet v1: worksheet_METB26-0001_completed.xlsx" },
       { id: "bev-1-s5", at: "2026-06-24T16:00:00.000Z", by: "labmanager@demolab.nl", type: "step-completed", summary: "Step 5 \"Report\" completed — batch moved to Awaiting review", step: { index: 4, id: "s5", name: "Report" } },
     ],
+    // Reviewed results (validity set by review — US-D6's transition, seeded
+    // here so the completed demo batch is coherent).
+    results: [
+      { id: "res-b1-1", targetType: "sample", targetId: "MET26-00004.001", analyteId: "a1", methodId: "m-icpms", methodVersion: 1, value: { kind: "numeric", value: "0.042" }, origin: "manual", worksheetVersion: null, enteredBy: "analyst@demolab.nl", enteredAt: "2026-06-23T13:00:00.000Z", supersedes: null, supersedeReason: null, validity: "valid" },
+      { id: "res-b1-2", targetType: "sample", targetId: "MET26-00004.001", analyteId: "a2", methodId: "m-icpms", methodVersion: 1, value: { kind: "censored", qualifier: "<", boundary: "0.005" }, origin: "manual", worksheetVersion: null, enteredBy: "analyst@demolab.nl", enteredAt: "2026-06-23T13:01:00.000Z", supersedes: null, supersedeReason: null, validity: "valid" },
+      { id: "res-b1-3", targetType: "qc", targetId: "qc-cs1", analyteId: "a1", methodId: "m-icpms", methodVersion: 1, value: { kind: "numeric", value: "5.1" }, origin: "manual", worksheetVersion: null, enteredBy: "analyst@demolab.nl", enteredAt: "2026-06-23T13:02:00.000Z", supersedes: null, supersedeReason: null, validity: "valid" },
+    ],
     createdAt: "2026-06-21T09:00:00.000Z",
     createdBy: "labmanager@demolab.nl",
   });
@@ -1405,6 +1456,14 @@ function seedDb(): MockDb {
       { id: "bev-2-created", at: "2026-06-28T10:15:00.000Z", by: "labmanager@demolab.nl", type: "created", summary: "Batch created: 1 sample + 2 QC positions (m-icpms v1)" },
       { id: "bev-2-s1", at: "2026-06-28T11:30:00.000Z", by: "analyst@demolab.nl", type: "step-completed", summary: "Step 1 \"Sample prep\" completed — Analytical balance 1 (BAL-001)", step: { index: 0, id: "s1", name: "Sample prep" }, equipmentUsed: [{ equipmentId: "eq-bal001", assetId: "BAL-001", name: "Analytical balance 1", typeName: "Balance" }] },
       { id: "bev-2-s2", at: "2026-06-29T09:45:00.000Z", by: "analyst@demolab.nl", type: "step-completed", summary: "Step 2 \"Digestion\" completed", step: { index: 1, id: "s2", name: "Digestion" } },
+      { id: "bev-2-r1", at: "2026-06-29T14:00:00.000Z", by: "analyst@demolab.nl", type: "result-entered", summary: "Result MET26-00003.001 · Pb: 12.9 (manual)" },
+      { id: "bev-2-r2", at: "2026-06-29T16:20:00.000Z", by: "analyst@demolab.nl", type: "result-superseded", summary: "Result MET26-00003.001 · Pb: 12.9 → 12.4 — transcription error, worksheet says 12.4" },
+    ],
+    // Correction-chain demo (AC 8): the first value stays, superseded with a
+    // reason; the grid shows 12.4 with the ⟳ indicator.
+    results: [
+      { id: "res-b2-1", targetType: "sample", targetId: "MET26-00003.001", analyteId: "a1", methodId: "m-icpms", methodVersion: 1, value: { kind: "numeric", value: "12.9" }, origin: "manual", worksheetVersion: null, enteredBy: "analyst@demolab.nl", enteredAt: "2026-06-29T14:00:00.000Z", supersedes: null, supersedeReason: null, validity: "pending" },
+      { id: "res-b2-2", targetType: "sample", targetId: "MET26-00003.001", analyteId: "a1", methodId: "m-icpms", methodVersion: 1, value: { kind: "numeric", value: "12.4" }, origin: "manual", worksheetVersion: null, enteredBy: "analyst@demolab.nl", enteredAt: "2026-06-29T16:20:00.000Z", supersedes: "res-b2-1", supersedeReason: "transcription error, worksheet says 12.4", validity: "pending" },
     ],
     createdAt: "2026-06-28T10:15:00.000Z",
     createdBy: "labmanager@demolab.nl",
@@ -1436,7 +1495,7 @@ function seedDb(): MockDb {
   };
 }
 
-export const mockDb: MockDb = ((globalThis as Record<string, unknown>).__limsMockDbV18 ??=
+export const mockDb: MockDb = ((globalThis as Record<string, unknown>).__limsMockDbV19 ??=
   seedDb()) as MockDb;
 
 export function getOrgSettings(orgId: string): OrgSettings {

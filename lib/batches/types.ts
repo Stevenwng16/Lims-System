@@ -1,4 +1,10 @@
-import type { Attachment, MockBatch, MockBatchEvent, SampleAcceptance } from "@/lib/mock-db";
+import type {
+  Attachment,
+  MockBatch,
+  MockBatchEvent,
+  MockMeasurementRecord,
+  SampleAcceptance,
+} from "@/lib/mock-db";
 import type { OrgRole } from "@/lib/permissions";
 
 // Batch operations of US-D1 (creation/composition) and US-D3 (step workflow,
@@ -143,6 +149,57 @@ export type BatchDetail = {
   sampleProgress: Record<string, "received" | "in-batch" | "in-progress" | "completed">;
 };
 
+// ---- US-D4: the results grid ------------------------------------------------
+
+export type ResultTarget = { targetType: "sample" | "qc"; targetId: string };
+
+/** Raw form input for one cell — parsed and validated SERVER-side (AC 5). */
+export type ResultValueInput =
+  | { kind: "numeric"; raw: string }
+  | { kind: "censored"; qualifier: "<" | ">"; boundaryRaw: string }
+  | { kind: "qualifier"; qualifierId: string }
+  | { kind: "text"; text: string }
+  | { kind: "no-result"; reason: string };
+
+export type GridCell = {
+  /** Newest record = the current value (pure view); null = empty cell. */
+  current: MockMeasurementRecord | null;
+  /** Full correction chain, newest first (AC 8) — length > 1 shows ⟳. */
+  chain: MockMeasurementRecord[];
+};
+
+export type ResultsGrid = {
+  entryOpen: boolean; // AC 1/10: open batches only; review closes the grid
+  entryClosedReason: string | null;
+  columns: { analyteId: string; name: string; unit: string | null; loq: string | null }[];
+  rows: {
+    targetType: "sample" | "qc";
+    targetId: string;
+    label: string; // sample ID, or "BLK ×2"
+    sub: string; // customer/description, or material name + lot
+  }[];
+  /** Keyed `${targetType}:${targetId}:${analyteId}`. */
+  cells: Record<string, GridCell>;
+  qualifiers: { id: string; name: string }[]; // active org list (AC 3)
+  filled: number;
+  total: number;
+  worksheetCount: number; // versions attached (AC 9 banner)
+};
+
+/** One parsed cell of a bulk preview (paste AC 13 / worksheet AC 14). */
+export type BulkPreviewCell = {
+  target: ResultTarget;
+  rowLabel: string;
+  analyteId: string;
+  raw: string;
+  outcome:
+    | { kind: "accepted"; display: string }
+    | { kind: "rejected"; message: string }
+    | { kind: "occupied" }; // never silently superseded (decision 4 Jul 2026)
+};
+
+export type BulkEntry = { target: ResultTarget; analyteId: string; raw: string };
+
 export type BatchActionResult =
   | { status: "success"; batchId?: string }
   | { status: "error"; message: string };
@@ -200,4 +257,35 @@ export interface BatchApi {
     batchId: string,
     file: { fileName: string; bytes: Uint8Array },
   ): Promise<BatchActionResult>;
+
+  // --- US-D4: manual data entry (the first ADR-2 records) ---
+
+  resultsGrid(actor: BatchActor, batchId: string): Promise<ResultsGrid | null>;
+  /** AC 2/5/7/8: enter or correct one cell. A correction REQUIRES a reason
+   * and appends a new record; the old one is never altered. */
+  enterResult(
+    actor: BatchActor,
+    batchId: string,
+    target: ResultTarget,
+    analyteId: string,
+    input: ResultValueInput,
+    supersedeReason: string,
+  ): Promise<BatchActionResult>;
+  /** AC 13: parse a pasted block per-cell with AC 5 validation — a preview,
+   * nothing is written. Occupied cells are flagged, never overwritten. */
+  previewBulk(actor: BatchActor, batchId: string, entries: BulkEntry[]): Promise<
+    { status: "error"; message: string } | { status: "success"; cells: BulkPreviewCell[] }
+  >;
+  /** AC 13: write the accepted cells of a paste (re-validated server-side;
+   * rejected/occupied cells are skipped and stay for manual handling). */
+  confirmBulk(actor: BatchActor, batchId: string, entries: BulkEntry[]): Promise<BatchActionResult>;
+  /** AC 14: read the latest worksheet's Results sheet into a pending preview
+   * (falls back with a clear notice — a convenience, never a gate). */
+  previewWorksheet(actor: BatchActor, batchId: string): Promise<
+    | { status: "error"; message: string }
+    | { status: "success"; worksheetVersion: number; cells: BulkPreviewCell[]; notices: string[] }
+  >;
+  /** AC 14: confirm the auto-read — the server RE-READS the worksheet itself
+   * so origin "worksheet" can never be forged onto hand-typed values. */
+  confirmWorksheet(actor: BatchActor, batchId: string): Promise<BatchActionResult>;
 }

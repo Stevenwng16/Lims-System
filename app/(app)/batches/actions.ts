@@ -2,10 +2,24 @@
 
 import { revalidatePath } from "next/cache";
 import { redirect } from "next/navigation";
-import { batchApi, type BatchActor, type BatchCompositionInput } from "@/lib/batches";
+import {
+  batchApi,
+  type BatchActor,
+  type BatchCompositionInput,
+  type BulkEntry,
+  type BulkPreviewCell,
+  type ResultValueInput,
+} from "@/lib/batches";
 import { resolveOrgContext } from "@/lib/auth/context";
 
 export type BatchFormState = { error?: string; success?: boolean };
+export type BulkFormState = {
+  error?: string;
+  success?: boolean;
+  preview?: BulkPreviewCell[];
+  notices?: string[];
+  worksheetVersion?: number;
+};
 
 // All org roles may view batches (lab-scoped); the mock API gates creating and
 // composition editing per US-D1's authorization (incl. the analyst per-lab
@@ -132,6 +146,117 @@ export async function uploadWorksheetAction(
   if (file.size > 5 * 1024 * 1024) return { error: "Worksheets are limited to 5 MB in the mock." };
   const bytes = new Uint8Array(await file.arrayBuffer());
   const result = await batchApi.uploadWorksheet(actor, batchId, { fileName: file.name, bytes });
+  if (result.status === "error") return { error: result.message };
+  revalidatePath(`/batches/${batchId}`);
+  return { success: true };
+}
+
+function parseResultValueInput(formData: FormData): ResultValueInput {
+  const kind = String(formData.get("valueKind") ?? "numeric");
+  switch (kind) {
+    case "censored":
+      return {
+        kind: "censored",
+        // Whitelisted server-side in the mock API.
+        qualifier: String(formData.get("qualifier") ?? "") as "<" | ">",
+        boundaryRaw: String(formData.get("boundaryRaw") ?? ""),
+      };
+    case "qualifier":
+      return { kind: "qualifier", qualifierId: String(formData.get("qualifierId") ?? "") };
+    case "text":
+      return { kind: "text", text: String(formData.get("text") ?? "") };
+    case "no-result":
+      return { kind: "no-result", reason: String(formData.get("noResultReason") ?? "") };
+    default:
+      return { kind: "numeric", raw: String(formData.get("raw") ?? "") };
+  }
+}
+
+export async function enterResultAction(
+  _prev: BatchFormState,
+  formData: FormData,
+): Promise<BatchFormState> {
+  const actor = await resolveBatchActor();
+  const batchId = String(formData.get("batchId") ?? "");
+  const result = await batchApi.enterResult(
+    actor,
+    batchId,
+    {
+      targetType: formData.get("targetType") === "qc" ? "qc" : "sample",
+      targetId: String(formData.get("targetId") ?? ""),
+    },
+    String(formData.get("analyteId") ?? ""),
+    parseResultValueInput(formData),
+    String(formData.get("supersedeReason") ?? ""),
+  );
+  if (result.status === "error") return { error: result.message };
+  revalidatePath(`/batches/${batchId}`);
+  return { success: true };
+}
+
+function parseBulkEntries(formData: FormData): BulkEntry[] | null {
+  try {
+    const parsed = JSON.parse(String(formData.get("entriesJson") ?? "[]")) as unknown[];
+    return parsed.map((e) => {
+      const item = e as { targetType?: unknown; targetId?: unknown; analyteId?: unknown; raw?: unknown };
+      return {
+        target: {
+          targetType: item.targetType === "qc" ? ("qc" as const) : ("sample" as const),
+          targetId: String(item.targetId ?? ""),
+        },
+        analyteId: String(item.analyteId ?? ""),
+        raw: String(item.raw ?? ""),
+      };
+    });
+  } catch {
+    return null;
+  }
+}
+
+export async function previewPasteAction(
+  _prev: BulkFormState,
+  formData: FormData,
+): Promise<BulkFormState> {
+  const actor = await resolveBatchActor();
+  const entries = parseBulkEntries(formData);
+  if (!entries) return { error: "The pasted block could not be read — try again." };
+  const result = await batchApi.previewBulk(actor, String(formData.get("batchId") ?? ""), entries);
+  if (result.status === "error") return { error: result.message };
+  return { preview: result.cells };
+}
+
+export async function confirmPasteAction(
+  _prev: BulkFormState,
+  formData: FormData,
+): Promise<BulkFormState> {
+  const actor = await resolveBatchActor();
+  const batchId = String(formData.get("batchId") ?? "");
+  const entries = parseBulkEntries(formData);
+  if (!entries) return { error: "The pasted block could not be read — try again." };
+  const result = await batchApi.confirmBulk(actor, batchId, entries);
+  if (result.status === "error") return { error: result.message };
+  revalidatePath(`/batches/${batchId}`);
+  return { success: true };
+}
+
+export async function previewWorksheetAction(
+  _prev: BulkFormState,
+  formData: FormData,
+): Promise<BulkFormState> {
+  const actor = await resolveBatchActor();
+  const result = await batchApi.previewWorksheet(actor, String(formData.get("batchId") ?? ""));
+  if (result.status === "error") return { error: result.message };
+  return { preview: result.cells, notices: result.notices, worksheetVersion: result.worksheetVersion };
+}
+
+export async function confirmWorksheetAction(
+  _prev: BulkFormState,
+  formData: FormData,
+): Promise<BulkFormState> {
+  const actor = await resolveBatchActor();
+  const batchId = String(formData.get("batchId") ?? "");
+  // The server re-reads the worksheet itself — nothing client-supplied here.
+  const result = await batchApi.confirmWorksheet(actor, batchId);
   if (result.status === "error") return { error: result.message };
   revalidatePath(`/batches/${batchId}`);
   return { success: true };
