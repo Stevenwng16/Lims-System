@@ -10,7 +10,7 @@ export type UserListItem = {
   name: string;
   role: OrgRole;
   labs: string[];
-  clearances: string[];
+  clearances: string[]; // method IDs (labels resolved at render — stable across renames)
   status: "active" | "inactive";
   lastLogin: string | null;
   locked: boolean;

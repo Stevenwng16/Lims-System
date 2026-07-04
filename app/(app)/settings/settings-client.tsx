@@ -6,6 +6,7 @@ import type { ListItem, OrgSettings } from "@/lib/mock-db";
 import { previewIds } from "@/lib/settings/format-id";
 import {
   saveBarcodeAction,
+  saveEquipmentSettingsAction,
   saveIdentifiersAction,
   saveLabSettingsAction,
   saveListAction,
@@ -240,16 +241,9 @@ function BarcodeSection({ barcode }: { barcode: OrgSettings["barcode"] }) {
         <form action={submit} className="space-y-4">
           <div className="flex flex-wrap items-end gap-4">
             <div className="space-y-2">
-              <Label htmlFor="symbology">Symbology</Label>
-              <Select name="symbology" defaultValue={barcode.symbology}>
-                <SelectTrigger id="symbology" className="w-40">
-                  <SelectValue />
-                </SelectTrigger>
-                <SelectContent>
-                  <SelectItem value="code128">Code 128</SelectItem>
-                  <SelectItem value="qr">QR</SelectItem>
-                </SelectContent>
-              </Select>
+              <Label>Symbology</Label>
+              <Input value="Code 128" readOnly className="w-40 bg-muted" />
+              <p className="text-xs text-muted-foreground">QR / DataMatrix — later.</p>
             </div>
             <div className="space-y-2">
               <Label htmlFor="widthMm">Width (mm)</Label>
@@ -267,18 +261,54 @@ function BarcodeSection({ barcode }: { barcode: OrgSettings["barcode"] }) {
               Sample ID (human-readable — always printed)
             </label>
             <label className="flex items-center gap-2 text-sm">
-              <Checkbox name="showJobNumber" defaultChecked={barcode.showJobNumber} />
-              Job number
+              <Checkbox name="showCustomer" defaultChecked={barcode.showCustomer} />
+              Customer
             </label>
             <label className="flex items-center gap-2 text-sm">
-              <Checkbox name="showClient" defaultChecked={barcode.showClient} />
-              Client
+              <Checkbox name="showSampleType" defaultChecked={barcode.showSampleType} />
+              Sample type
+            </label>
+            <label className="flex items-center gap-2 text-sm">
+              <Checkbox name="showJobNumber" defaultChecked={barcode.showJobNumber} />
+              Standalone job number
             </label>
             <label className="flex items-center gap-2 text-sm">
               <Checkbox name="showDate" defaultChecked={barcode.showDate} />
-              Registration date
+              Receipt date
             </label>
           </fieldset>
+          <SaveRow pending={pending} state={state} />
+        </form>
+      </CardContent>
+    </Card>
+  );
+}
+
+function EquipmentSection({ equipment }: { equipment: OrgSettings["equipment"] }) {
+  const [state, submit, pending] = useActionState(saveEquipmentSettingsAction, initialState);
+  return (
+    <Card>
+      <CardHeader>
+        <CardTitle>Equipment</CardTitle>
+        <CardDescription>
+          Calibration due dates inside this window show as &quot;Due soon&quot; — a warning, not a
+          block (US-B3).
+        </CardDescription>
+      </CardHeader>
+      <CardContent>
+        <form action={submit} className="space-y-4">
+          <div className="space-y-2">
+            <Label htmlFor="calibrationWarningDays">Calibration warning window (days)</Label>
+            <Input
+              id="calibrationWarningDays"
+              name="calibrationWarningDays"
+              type="number"
+              min={1}
+              max={365}
+              defaultValue={equipment.calibrationWarningDays}
+              className="w-24"
+            />
+          </div>
           <SaveRow pending={pending} state={state} />
         </form>
       </CardContent>
@@ -293,8 +323,27 @@ type LabSettingsRow = {
   reviewerMustDiffer: boolean;
 };
 
-function LabSettingsSection({ labs }: { labs: LabSettingsRow[] }) {
+// The form + its action state live in a keyed child, so switching labs resets
+// the "Saved." / error message along with the checkboxes (audit finding 30).
+function LabSettingsForm({ lab }: { lab: LabSettingsRow }) {
   const [state, submit, pending] = useActionState(saveLabSettingsAction, initialState);
+  return (
+    <form action={submit} className="space-y-3">
+      <input type="hidden" name="labId" value={lab.id} />
+      <label className="flex items-center gap-2 text-sm">
+        <Checkbox name="analystsMayCreateBatches" defaultChecked={lab.analystsMayCreateBatches} />
+        Analysts may create batches (cleared methods only)
+      </label>
+      <label className="flex items-center gap-2 text-sm">
+        <Checkbox name="reviewerMustDiffer" defaultChecked={lab.reviewerMustDiffer} />
+        Reviewer must differ from the performing analyst(s)
+      </label>
+      <SaveRow pending={pending} state={state} />
+    </form>
+  );
+}
+
+function LabSettingsSection({ labs }: { labs: LabSettingsRow[] }) {
   const [selectedId, setSelectedId] = useState(labs[0]?.id ?? "");
   const selected = labs.find((lab) => lab.id === selectedId);
 
@@ -322,21 +371,7 @@ function LabSettingsSection({ labs }: { labs: LabSettingsRow[] }) {
             </SelectContent>
           </Select>
         </div>
-        <form action={submit} className="space-y-3" key={selected.id}>
-          <input type="hidden" name="labId" value={selected.id} />
-          <label className="flex items-center gap-2 text-sm">
-            <Checkbox
-              name="analystsMayCreateBatches"
-              defaultChecked={selected.analystsMayCreateBatches}
-            />
-            Analysts may create batches (cleared methods only)
-          </label>
-          <label className="flex items-center gap-2 text-sm">
-            <Checkbox name="reviewerMustDiffer" defaultChecked={selected.reviewerMustDiffer} />
-            Reviewer must differ from the performing analyst(s)
-          </label>
-          <SaveRow pending={pending} state={state} />
-        </form>
+        <LabSettingsForm key={selected.id} lab={selected} />
       </CardContent>
     </Card>
   );
@@ -348,7 +383,13 @@ export function SettingsClient({
 }: {
   settings: Pick<
     OrgSettings,
-    "security" | "identifiers" | "jobLabel" | "sampleTypes" | "resultQualifiers" | "barcode"
+    | "security"
+    | "identifiers"
+    | "jobLabel"
+    | "sampleTypes"
+    | "resultQualifiers"
+    | "barcode"
+    | "equipment"
   >;
   labs: LabSettingsRow[];
 }) {
@@ -369,6 +410,7 @@ export function SettingsClient({
         items={settings.resultQualifiers}
       />
       <BarcodeSection barcode={settings.barcode} />
+      <EquipmentSection equipment={settings.equipment} />
       <LabSettingsSection labs={labs} />
     </div>
   );

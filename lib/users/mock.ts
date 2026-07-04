@@ -1,5 +1,37 @@
-import { DEMO_PASSWORD, mockDb, type MockUser } from "@/lib/mock-db";
+import { currentMethodVersion, DEMO_PASSWORD, mockDb, type MockUser } from "@/lib/mock-db";
+import type { OrgRole } from "@/lib/permissions";
 import type { Actor, UserActionResult, UserApi, UserInput, UserListItem } from "./types";
+
+// The four fixed organisation roles (US-A4 AC 1). "platform-admin" is a vendor
+// role that belongs to no customer org and is deliberately absent — an org
+// admin can never mint one (audit finding 17).
+const ORG_ROLES: OrgRole[] = ["admin", "lab-manager", "analyst", "read-only"];
+
+/**
+ * Method ids the actor may grant/revoke: active methods within their scope
+ * (admins: whole organisation; lab managers: own labs). Everything outside
+ * this set must survive a save untouched — US-B1 AC 12: deactivating a
+ * method leaves existing clearance records intact.
+ */
+function grantableMethodIds(actor: Actor): Set<string> {
+  const ids = new Set<string>();
+  for (const method of mockDb.methods.values()) {
+    if (method.orgId !== actor.orgId || method.status !== "active") continue;
+    const labName = mockDb.labs.get(currentMethodVersion(method).labId)?.name ?? "";
+    if (actor.role === "admin" || actor.labs.includes(labName)) ids.add(method.id);
+  }
+  return ids;
+}
+
+/** Active org lab names the actor may assign to (LMs: only their own). */
+function assignableLabNames(actor: Actor): Set<string> {
+  const names = new Set<string>();
+  for (const lab of mockDb.labs.values()) {
+    if (lab.orgId !== actor.orgId || lab.status !== "active") continue;
+    if (actor.role === "admin" || actor.labs.includes(lab.name)) names.add(lab.name);
+  }
+  return names;
+}
 
 function toListItem(u: MockUser): UserListItem {
   return {
@@ -28,7 +60,8 @@ function isManager(actor: Actor): boolean {
 
 /**
  * AC 10: lab managers manage Analyst and Read-only users within their own
- * lab(s) only, and can never grant Admin or Lab manager.
+ * lab(s) only, and can never grant Admin or Lab manager. Checks the SUBMITTED
+ * role/labs.
  */
 function labManagerViolation(actor: Actor, input: UserInput, target?: MockUser): string | null {
   if (actor.role !== "lab-manager") return null;
@@ -44,10 +77,43 @@ function labManagerViolation(actor: Actor, input: UserInput, target?: MockUser):
   return null;
 }
 
+/**
+ * A lab manager may only act on a TARGET account that is an analyst/read-only
+ * user already sharing one of their labs (audit finding 2). Applies to
+ * update / reset / unlock — the target's CURRENT state, not the submission.
+ */
+function labManagerTargetViolation(actor: Actor, target: MockUser): string | null {
+  if (actor.role !== "lab-manager") return null;
+  if (!["analyst", "read-only"].includes(target.role)) {
+    return "Lab managers cannot manage Admins or other Lab managers.";
+  }
+  if (!sharesLab(target.labs, actor.labs)) {
+    return "Lab managers can only manage users in their own lab(s).";
+  }
+  return null;
+}
+
+/** Every submitted lab must exist in the actor's org; inactive labs take no
+ * NEW assignment (audit finding 18), mirroring the methods module. */
+function labViolation(actor: Actor, input: UserInput, target?: MockUser): string | null {
+  const orgLabs = new Map(
+    [...mockDb.labs.values()].filter((l) => l.orgId === actor.orgId).map((l) => [l.name, l]),
+  );
+  for (const name of input.labs) {
+    const lab = orgLabs.get(name);
+    if (!lab) return `Unknown lab "${name}".`;
+    if (lab.status !== "active" && !target?.labs.includes(name)) {
+      return "Users cannot be newly assigned to an inactive lab.";
+    }
+  }
+  return null;
+}
+
 function validateInput(input: UserInput): string | null {
   if (!input.name.trim()) return "Full name is required.";
   if (!input.email.includes("@")) return "Enter a valid email address.";
-  if (input.labs.length === 0) return "Assign the user to at least one lab.";
+  // Whitelist the role server-side (audit finding 17).
+  if (!ORG_ROLES.includes(input.role)) return "Invalid role.";
   return null;
 }
 
@@ -63,8 +129,12 @@ export const mockUserApi: UserApi = {
 
   async createUser(actor, input): Promise<UserActionResult> {
     if (!isManager(actor)) return { status: "error", message: "Not allowed." };
-    const error = validateInput(input) ?? labManagerViolation(actor, input);
+    const error =
+      validateInput(input) ?? labManagerViolation(actor, input) ?? labViolation(actor, input);
     if (error) return { status: "error", message: error };
+    if (input.labs.length === 0) {
+      return { status: "error", message: "Assign the user to at least one lab." };
+    }
 
     const email = input.email.trim().toLowerCase();
     // AC 11: unique across the whole platform, not just this organisation.
@@ -80,7 +150,10 @@ export const mockUserApi: UserApi = {
       role: input.role,
       orgId: actor.orgId,
       labs: input.labs,
-      clearances: input.role === "analyst" ? input.clearances : [],
+      clearances:
+        input.role === "analyst"
+          ? input.clearances.filter((id) => grantableMethodIds(actor).has(id))
+          : [],
       status: "active",
       lastLogin: null,
       // AC 3: the admin never sets or sees a password — the invite flow does.
@@ -90,7 +163,8 @@ export const mockUserApi: UserApi = {
       failedAttempts: 0,
       locked: false,
     });
-    if (org) org.userCount += 1;
+    // userCount is derived live in the platform console (finding 9) — nothing
+    // to increment here.
     console.log(
       `[mock users] invitation sent to ${email} to set a password and enrol MFA ` +
         `(mock: password preset to ${DEMO_PASSWORD})`,
@@ -111,7 +185,11 @@ export const mockUserApi: UserApi = {
       };
     }
 
-    const error = validateInput(input) ?? labManagerViolation(actor, input, target);
+    const error =
+      validateInput(input) ??
+      labManagerViolation(actor, input, target) ??
+      labManagerTargetViolation(actor, target) ??
+      labViolation(actor, input, target);
     if (error) return { status: "error", message: error };
 
     const newEmail = input.email.trim().toLowerCase();
@@ -134,6 +212,17 @@ export const mockUserApi: UserApi = {
       }
     }
 
+    // MERGE lab assignments (audit finding 19): the actor can only add/remove
+    // within their own scope; labs outside it (a lab manager's other-lab
+    // assignment, or a since-deactivated lab) are links that must survive
+    // (US-A5 AC 4), exactly like clearances.
+    const labScope = assignableLabNames(actor);
+    const keptLabs = target.labs.filter((lab) => !labScope.has(lab));
+    const mergedLabs = [...new Set([...input.labs, ...keptLabs])];
+    if (mergedLabs.length === 0) {
+      return { status: "error", message: "Assign the user to at least one lab." };
+    }
+
     if (newEmail !== targetEmail) {
       mockDb.users.delete(targetEmail);
       target.email = newEmail;
@@ -141,10 +230,17 @@ export const mockUserApi: UserApi = {
     }
     target.name = input.name.trim();
     target.role = input.role;
-    target.labs = input.labs;
-    // AC 4/5: immediate effect — a revoked clearance blocks further work at
-    // the moment of action (enforced wherever clearances are checked).
-    target.clearances = input.role === "analyst" ? input.clearances : [];
+    target.labs = mergedLabs;
+    // AC 4/5: immediate effect. Only touch clearances when the saved role is
+    // Analyst; on a role change away from Analyst they stay DORMANT, not
+    // destroyed (audit finding 22). Within an analyst edit, merge so
+    // out-of-scope / deactivated-method clearances survive (US-B1 AC 12).
+    if (input.role === "analyst") {
+      const grantable = grantableMethodIds(actor);
+      const granted = input.clearances.filter((id) => grantable.has(id));
+      const keptOutOfScope = target.clearances.filter((id) => !grantable.has(id));
+      target.clearances = [...new Set([...granted, ...keptOutOfScope])];
+    }
     target.status = input.status;
     return { status: "success" };
   },
@@ -153,6 +249,8 @@ export const mockUserApi: UserApi = {
     if (!isManager(actor)) return { status: "error", message: "Not allowed." };
     const target = mockDb.users.get(targetEmail);
     if (!target || target.orgId !== actor.orgId) return { status: "error", message: "Unknown user." };
+    const denied = labManagerTargetViolation(actor, target);
+    if (denied) return { status: "error", message: denied };
     console.log(`[mock users] password reset sent to ${targetEmail} (triggered by ${actor.email})`);
     return { status: "success" };
   },
@@ -161,6 +259,8 @@ export const mockUserApi: UserApi = {
     if (!isManager(actor)) return { status: "error", message: "Not allowed." };
     const target = mockDb.users.get(targetEmail);
     if (!target || target.orgId !== actor.orgId) return { status: "error", message: "Unknown user." };
+    const denied = labManagerTargetViolation(actor, target);
+    if (denied) return { status: "error", message: denied };
     target.locked = false;
     target.failedAttempts = 0;
     return { status: "success" };

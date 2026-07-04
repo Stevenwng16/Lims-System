@@ -5,7 +5,9 @@ import { cookies } from "next/headers";
 import { redirect } from "next/navigation";
 import { platformApi } from "@/lib/platform";
 import { decodeSession, SESSION_COOKIE } from "@/lib/auth/session";
+import { mockDb } from "@/lib/mock-db";
 import {
+  decodeSupportSession,
   encodeSupportSession,
   SUPPORT_COOKIE,
 } from "@/lib/platform/support-session";
@@ -16,8 +18,13 @@ async function requirePlatformAdmin() {
   const cookieStore = await cookies();
   const session = decodeSession(cookieStore.get(SESSION_COOKIE)?.value);
   // UI hiding is presentation — this check is the mock's stand-in for the
-  // real server-side enforcement (invariant 4).
+  // real server-side enforcement (invariant 4). Live-revalidated against the
+  // store, never the cookie snapshot alone (Fable re-review finding 23).
   if (session?.user.role !== "platform-admin") redirect("/");
+  const record = mockDb.users.get(session.user.email);
+  if (!record || record.role !== "platform-admin" || record.status === "inactive" || record.locked) {
+    redirect("/session-expired");
+  }
 }
 
 export async function provisionOrganisationAction(
@@ -78,17 +85,21 @@ export async function openSupportSessionAction(
       orgId,
       orgName: result.orgName ?? orgId,
       allowAdmin: result.allowAdmin ?? false,
-      expiresAt: Date.now() + 8 * 3600_000, // session marker; grant expiry is enforced in the API
+      // Cap the cookie to the grant so it can never outlive it (finding 5).
+      expiresAt: Math.min(Date.now() + 8 * 3600_000, result.grantExpiresAt ?? Date.now()),
     }),
     { httpOnly: true, sameSite: "lax", path: "/" },
   );
   redirect("/"); // vendor now sees the customer environment, banner on (AC 9)
 }
 
-export async function endSupportSessionAction(formData: FormData): Promise<void> {
-  const orgId = String(formData.get("orgId") ?? "");
-  await platformApi.endSupportSession(orgId);
+export async function endSupportSessionAction(): Promise<void> {
+  // Platform-admin only, and the org is taken from the caller's OWN support
+  // cookie — never arbitrary form data (audit finding 11).
+  await requirePlatformAdmin();
   const cookieStore = await cookies();
+  const support = decodeSupportSession(cookieStore.get(SUPPORT_COOKIE)?.value);
+  if (support) await platformApi.endSupportSession(support.orgId);
   cookieStore.delete(SUPPORT_COOKIE);
   redirect("/platform");
 }

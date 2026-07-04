@@ -17,7 +17,6 @@ export async function SupportBanner() {
         {session.orgName}
       </span>
       <form action={endSupportSessionAction}>
-        <input type="hidden" name="orgId" value={session.orgId} />
         <Button type="submit" variant="secondary" size="xs">
           End session
         </Button>

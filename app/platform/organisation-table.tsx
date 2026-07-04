@@ -1,6 +1,6 @@
 "use client";
 
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { useActionState } from "react";
 import type { OrganisationSummary } from "@/lib/platform";
 import {
@@ -40,24 +40,72 @@ function StatusBadge({ status }: { status: OrganisationSummary["status"] }) {
 
 function grantLabel(org: OrganisationSummary): string {
   if (!org.supportGrant) return "no grant";
-  if (org.supportGrant.sessionActive) return "session active";
+  if (org.supportSessionActive) return "session active";
   const hoursLeft = Math.max(1, Math.ceil((org.supportGrant.expiresAt - Date.now()) / 3600_000));
   return `${hoursLeft}h left${org.supportGrant.allowAdmin ? " · admin" : ""}`;
 }
 
+// Per-target dialog with its own action state (audit finding 29): fresh state
+// per mount fixes stale-error leakage and the title flip; the functional-
+// updater close guard fixes an in-flight result closing the wrong dialog.
+function StatusDialog({
+  org,
+  onClose,
+  onSuccess,
+}: {
+  org: OrganisationSummary;
+  onClose: () => void;
+  onSuccess: (orgId: string) => void;
+}) {
+  const suspending = org.status === "active";
+  const action = suspending ? suspendOrganisationAction : reactivateOrganisationAction;
+  const [state, submit, pending] = useActionState(action, initialState);
+
+  useEffect(() => {
+    if (state.success) onSuccess(org.id);
+  }, [state, org.id, onSuccess]);
+
+  return (
+    <Dialog open onOpenChange={(open) => !open && !pending && onClose()}>
+      <DialogContent>
+        <DialogHeader>
+          <DialogTitle>
+            {suspending ? "Suspend" : "Reactivate"} {org.name}
+          </DialogTitle>
+          <DialogDescription>
+            {suspending
+              ? "Users of this organisation will no longer be able to log in. No data is altered or removed; reactivation restores access exactly as it was."
+              : "Users of this organisation will be able to log in again."}{" "}
+            A reason is required and recorded.
+          </DialogDescription>
+        </DialogHeader>
+        <form action={submit} className="space-y-4">
+          <input type="hidden" name="orgId" value={org.id} />
+          <div className="space-y-2">
+            <Label htmlFor="reason">Reason</Label>
+            <Textarea id="reason" name="reason" required autoFocus />
+          </div>
+          {state.error && (
+            <Alert variant="destructive">
+              <AlertDescription>{state.error}</AlertDescription>
+            </Alert>
+          )}
+          <Button
+            type="submit"
+            className="w-full"
+            variant={suspending ? "destructive" : "default"}
+            disabled={pending}
+          >
+            {pending ? "Saving…" : suspending ? "Suspend organisation" : "Reactivate organisation"}
+          </Button>
+        </form>
+      </DialogContent>
+    </Dialog>
+  );
+}
+
 export function OrganisationTable({ organisations }: { organisations: OrganisationSummary[] }) {
   const [dialogOrg, setDialogOrg] = useState<OrganisationSummary | null>(null);
-  const suspending = dialogOrg?.status === "active";
-
-  const [state, submit, pending] = useActionState(
-    async (prev: PlatformFormState, formData: FormData) => {
-      const action = suspending ? suspendOrganisationAction : reactivateOrganisationAction;
-      const result = await action(prev, formData);
-      if (result.success) setDialogOrg(null);
-      return result;
-    },
-    initialState,
-  );
   const [sessionState, openSession, sessionPending] = useActionState(
     openSupportSessionAction,
     initialState,
@@ -94,7 +142,7 @@ export function OrganisationTable({ organisations }: { organisations: Organisati
                 <TableCell className="text-right tabular-nums">{org.userCount}</TableCell>
                 <TableCell className="text-zinc-500 dark:text-zinc-400">{org.createdAt}</TableCell>
                 <TableCell>
-                  {org.supportGrant && !org.supportGrant.sessionActive ? (
+                  {org.supportGrant && !org.supportSessionActive ? (
                     <form action={openSession} className="flex items-center gap-2">
                       <input type="hidden" name="orgId" value={org.id} />
                       <span className="text-sm">{grantLabel(org)}</span>
@@ -109,15 +157,9 @@ export function OrganisationTable({ organisations }: { organisations: Organisati
                   )}
                 </TableCell>
                 <TableCell className="text-right">
-                  {org.status === "active" ? (
-                    <Button variant="ghost" size="xs" onClick={() => setDialogOrg(org)}>
-                      Suspend
-                    </Button>
-                  ) : (
-                    <Button variant="ghost" size="xs" onClick={() => setDialogOrg(org)}>
-                      Reactivate
-                    </Button>
-                  )}
+                  <Button variant="ghost" size="xs" onClick={() => setDialogOrg(org)}>
+                    {org.status === "active" ? "Suspend" : "Reactivate"}
+                  </Button>
                 </TableCell>
               </TableRow>
             ))}
@@ -130,41 +172,14 @@ export function OrganisationTable({ organisations }: { organisations: Organisati
         </Alert>
       )}
 
-      <Dialog open={!!dialogOrg} onOpenChange={(open) => !open && setDialogOrg(null)}>
-        <DialogContent>
-          <DialogHeader>
-            <DialogTitle>
-              {suspending ? "Suspend" : "Reactivate"} {dialogOrg?.name}
-            </DialogTitle>
-            <DialogDescription>
-              {suspending
-                ? "Users of this organisation will no longer be able to log in. No data is altered or removed; reactivation restores access exactly as it was."
-                : "Users of this organisation will be able to log in again."}{" "}
-              A reason is required and recorded.
-            </DialogDescription>
-          </DialogHeader>
-          <form action={submit} className="space-y-4">
-            <input type="hidden" name="orgId" value={dialogOrg?.id ?? ""} />
-            <div className="space-y-2">
-              <Label htmlFor="reason">Reason</Label>
-              <Textarea id="reason" name="reason" required autoFocus />
-            </div>
-            {state.error && (
-              <Alert variant="destructive">
-                <AlertDescription>{state.error}</AlertDescription>
-              </Alert>
-            )}
-            <Button
-              type="submit"
-              className="w-full"
-              variant={suspending ? "destructive" : "default"}
-              disabled={pending}
-            >
-              {pending ? "Saving…" : suspending ? "Suspend organisation" : "Reactivate organisation"}
-            </Button>
-          </form>
-        </DialogContent>
-      </Dialog>
+      {dialogOrg && (
+        <StatusDialog
+          key={dialogOrg.id}
+          org={dialogOrg}
+          onClose={() => setDialogOrg(null)}
+          onSuccess={(orgId) => setDialogOrg((cur) => (cur?.id === orgId ? null : cur))}
+        />
+      )}
     </>
   );
 }

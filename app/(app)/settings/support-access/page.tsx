@@ -1,7 +1,3 @@
-import { cookies } from "next/headers";
-import { redirect } from "next/navigation";
-import { decodeSession, SESSION_COOKIE } from "@/lib/auth/session";
-import { platformApi } from "@/lib/platform";
 import {
   Breadcrumb,
   BreadcrumbItem,
@@ -10,28 +6,27 @@ import {
   BreadcrumbPage,
   BreadcrumbSeparator,
 } from "@/components/ui/breadcrumb";
+import { platformApi } from "@/lib/platform";
+import { requireOrgAdmin } from "./actions";
 import { SupportAccessForm } from "./support-access-form";
 
 export const metadata = { title: "Support access — LIMS" };
 
-// Customer side of US-A2 AC 8/9. Lives under Settings; the full Settings
-// area arrives with US-A7 — until then this page stands alone.
+// Customer side of US-A2 AC 8/9. Real Admin only (live-checked in
+// requireOrgAdmin) — grant management stays with the customer even during an
+// admin-rights support session.
 export default async function SupportAccessPage() {
-  const cookieStore = await cookies();
-  const session = decodeSession(cookieStore.get(SESSION_COOKIE)?.value);
-  // Real Admin only — grant management stays with the customer even during
-  // an admin-rights support session (see actions.ts).
-  if (session?.user.role !== "admin") redirect("/");
-
-  const orgId = session.user.organisation === "Demo Lab" ? "org-demolab" : "org-unknown";
+  const orgId = await requireOrgAdmin(); // redirects unless a live org admin
   const grant = await platformApi.getSupportGrant(orgId);
+  const sessionActive =
+    !!grant && grant.sessionExpiresAt !== null && grant.sessionExpiresAt > Date.now();
 
   return (
     <div className="mx-auto max-w-2xl space-y-6">
       <Breadcrumb>
         <BreadcrumbList>
           <BreadcrumbItem>
-            <BreadcrumbLink href="/">Home</BreadcrumbLink>
+            <BreadcrumbLink href="/jobs">Jobs</BreadcrumbLink>
           </BreadcrumbItem>
           <BreadcrumbSeparator />
           <BreadcrumbItem>
@@ -49,7 +44,7 @@ export default async function SupportAccessPage() {
           grant && {
             expiresAt: grant.expiresAt,
             allowAdmin: grant.allowAdmin,
-            sessionActive: grant.sessionActive,
+            sessionActive,
           }
         }
       />

@@ -1,9 +1,7 @@
-import { cookies } from "next/headers";
 import { redirect } from "next/navigation";
 import { Check, Minus } from "lucide-react";
-import { decodeSession, SESSION_COOKIE } from "@/lib/auth/session";
-import { decodeSupportSession, SUPPORT_COOKIE } from "@/lib/platform/support-session";
-import { CAPABILITY_ROWS, effectiveOrgRole, ROLE_LABELS, type OrgRole } from "@/lib/permissions";
+import { resolveOrgContext } from "@/lib/auth/context";
+import { CAPABILITY_ROWS, ROLE_LABELS, type OrgRole } from "@/lib/permissions";
 import {
   Breadcrumb,
   BreadcrumbItem,
@@ -36,19 +34,15 @@ function CellValue({ value }: { value: boolean | "cleared-only" | "per-lab-setti
 // lib/permissions.ts — this page renders it, never redefines it). Editable
 // role assignment and clearances live in User management (US-A6).
 export default async function RolesPage() {
-  const cookieStore = await cookies();
-  const session = decodeSession(cookieStore.get(SESSION_COOKIE)?.value);
-  if (!session) redirect("/login");
-  const supportSession = decodeSupportSession(cookieStore.get(SUPPORT_COOKIE)?.value);
-  const role = effectiveOrgRole(session.user, supportSession);
-  if (role !== "admin") redirect("/");
+  const ctx = await resolveOrgContext();
+  if (ctx.role !== "admin") redirect("/");
 
   return (
     <div className="mx-auto max-w-4xl space-y-6">
       <Breadcrumb>
         <BreadcrumbList>
           <BreadcrumbItem>
-            <BreadcrumbLink href="/">Home</BreadcrumbLink>
+            <BreadcrumbLink href="/jobs">Jobs</BreadcrumbLink>
           </BreadcrumbItem>
           <BreadcrumbSeparator />
           <BreadcrumbItem>Admin</BreadcrumbItem>

@@ -20,12 +20,14 @@ export function hasSeqToken(template: string): boolean {
 }
 
 export function renderTemplate(template: string, ctx: IdContext): string {
+  // Function replacements so metacharacters ($&, $', $$) in a lab code or job
+  // number can never expand into the output (audit finding 21).
   return template
-    .replace(/\{LAB\}/g, ctx.lab)
-    .replace(/\{YYYY\}/g, String(ctx.year))
-    .replace(/\{YY\}/g, String(ctx.year % 100).padStart(2, "0"))
-    .replace(/\{MM\}/g, String(ctx.month).padStart(2, "0"))
-    .replace(/\{JOB\}/g, ctx.job ?? "")
+    .replace(/\{LAB\}/g, () => ctx.lab)
+    .replace(/\{YYYY\}/g, () => String(ctx.year))
+    .replace(/\{YY\}/g, () => String(ctx.year % 100).padStart(2, "0"))
+    .replace(/\{MM\}/g, () => String(ctx.month).padStart(2, "0"))
+    .replace(/\{JOB\}/g, () => ctx.job ?? "")
     .replace(SEQ_TOKEN, (_, zeros: string) => String(ctx.seq).padStart(zeros.length, "0"));
 }
 

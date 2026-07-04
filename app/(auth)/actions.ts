@@ -4,6 +4,8 @@ import { cookies } from "next/headers";
 import { redirect } from "next/navigation";
 import { authApi } from "@/lib/auth";
 import { encodeSession, SESSION_COOKIE, sessionCookieOptions } from "@/lib/auth/session";
+import { decodeSupportSession, SUPPORT_COOKIE } from "@/lib/platform/support-session";
+import { platformApi } from "@/lib/platform";
 import type { SessionUser } from "@/lib/auth";
 
 export type AuthFormState = {
@@ -12,7 +14,17 @@ export type AuthFormState = {
   info?: string;
 };
 
+// A stray support cookie must never travel into a new session — it would apply
+// another organisation's context to whoever logs in next (audit finding 6).
+async function clearSupportCookie(): Promise<void> {
+  const cookieStore = await cookies();
+  const support = decodeSupportSession(cookieStore.get(SUPPORT_COOKIE)?.value);
+  if (support) await platformApi.endSupportSession(support.orgId);
+  cookieStore.delete(SUPPORT_COOKIE);
+}
+
 async function startSession(user: SessionUser): Promise<never> {
+  await clearSupportCookie();
   const cookieStore = await cookies();
   cookieStore.set(SESSION_COOKIE, encodeSession(user), sessionCookieOptions);
   redirect("/");
@@ -93,6 +105,7 @@ export async function resetPasswordAction(
 }
 
 export async function logoutAction(): Promise<never> {
+  await clearSupportCookie();
   const cookieStore = await cookies();
   cookieStore.delete(SESSION_COOKIE);
   redirect("/login");

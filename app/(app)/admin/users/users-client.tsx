@@ -44,10 +44,13 @@ import {
 
 const initialState: UserFormState = {};
 
+type ClearanceOption = { id: string; label: string };
+
 type Props = {
   users: UserListItem[];
   assignableLabs: string[];
-  methods: string[];
+  methods: ClearanceOption[];
+  methodLabels: Record<string, string>;
   actorRole: "admin" | "lab-manager";
   actorEmail: string;
 };
@@ -63,15 +66,22 @@ function UserFormFields({
   user,
   assignableLabs,
   methods,
+  methodLabels,
   actorRole,
 }: {
   user: UserListItem | null;
   assignableLabs: string[];
-  methods: string[];
+  methods: ClearanceOption[];
+  methodLabels: Record<string, string>;
   actorRole: Props["actorRole"];
 }) {
   const [role, setRole] = useState<OrgRole>(user?.role ?? "read-only");
   const prefix = user ? "edit" : "new";
+  // Clearances the user holds that this form cannot edit (method inactive or
+  // outside the actor's labs) — they survive saves untouched (US-B1 AC 12).
+  const heldElsewhere = (user?.clearances ?? []).filter(
+    (id) => !methods.some((m) => m.id === id),
+  );
 
   return (
     <>
@@ -123,16 +133,22 @@ function UserFormFields({
           </p>
           <div className="grid grid-cols-1 gap-2 sm:grid-cols-2">
             {methods.map((method) => (
-              <label key={method} className="flex items-center gap-2 text-sm">
+              <label key={method.id} className="flex items-center gap-2 text-sm">
                 <Checkbox
                   name="clearances"
-                  value={method}
-                  defaultChecked={user?.clearances.includes(method)}
+                  value={method.id}
+                  defaultChecked={user?.clearances.includes(method.id)}
                 />
-                {method}
+                {method.label}
               </label>
             ))}
           </div>
+          {heldElsewhere.length > 0 && (
+            <p className="text-xs text-muted-foreground">
+              Also holds (kept for the audit trail, not editable here):{" "}
+              {heldElsewhere.map((id) => methodLabels[id] ?? id).join(", ")}
+            </p>
+          )}
         </fieldset>
       )}
     </>
@@ -263,14 +279,30 @@ function EditUserDialog({
   );
 }
 
-export function UsersClient({ users, assignableLabs, methods, actorRole, actorEmail }: Props) {
-  const [editing, setEditing] = useState<UserListItem | null>(null);
+export function UsersClient({
+  users,
+  assignableLabs,
+  methods,
+  methodLabels,
+  actorRole,
+  actorEmail,
+}: Props) {
+  // Track only the identity and derive the row from fresh props, so the open
+  // dialog stays in sync with revalidated data — e.g. after Unlock the "locked"
+  // badge and Unlock button disappear (audit finding 31).
+  const [editingEmail, setEditingEmail] = useState<string | null>(null);
+  const editing = editingEmail ? (users.find((u) => u.email === editingEmail) ?? null) : null;
 
   return (
     <>
       <div className="flex items-center justify-between">
         <h1 className="text-xl font-semibold text-foreground">Users</h1>
-        <NewUserDialog assignableLabs={assignableLabs} methods={methods} actorRole={actorRole} />
+        <NewUserDialog
+          assignableLabs={assignableLabs}
+          methods={methods}
+          methodLabels={methodLabels}
+          actorRole={actorRole}
+        />
       </div>
 
       <div className="overflow-x-auto rounded-lg border bg-card">
@@ -312,7 +344,7 @@ export function UsersClient({ users, assignableLabs, methods, actorRole, actorEm
                 </TableCell>
                 <TableCell className="text-muted-foreground">{user.lastLogin ?? "—"}</TableCell>
                 <TableCell className="text-right">
-                  <Button variant="ghost" size="xs" onClick={() => setEditing(user)}>
+                  <Button variant="ghost" size="xs" onClick={() => setEditingEmail(user.email)}>
                     Edit
                   </Button>
                 </TableCell>
@@ -324,10 +356,12 @@ export function UsersClient({ users, assignableLabs, methods, actorRole, actorEm
 
       {editing && (
         <EditUserDialog
+          key={`${editing.email}-${editing.locked}-${editing.status}`}
           user={editing}
-          onClose={() => setEditing(null)}
+          onClose={() => setEditingEmail(null)}
           assignableLabs={assignableLabs}
           methods={methods}
+          methodLabels={methodLabels}
           actorRole={actorRole}
         />
       )}
