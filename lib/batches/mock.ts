@@ -3,17 +3,20 @@ import {
   currentMethodVersion,
   getOrgSettings,
   mockDb,
+  type MethodStep,
   type MethodVersion,
   type MockBatch,
+  type MockBatchEvent,
   type MockJob,
   type MockMethod,
   type MockSample,
   type QcType,
 } from "@/lib/mock-db";
+import { equipmentAvailability } from "@/lib/equipment";
 import { generateBatchNumber } from "@/lib/jobs/ids";
 import { sampleCanBatch } from "@/lib/jobs/types";
 import { qcMaterialsForMethod } from "@/lib/qc";
-import { openBatchOfMethodContaining } from "./progress";
+import { openBatchOfMethodContaining, sampleMethodProgress } from "./progress";
 import type {
   BatchActionResult,
   BatchActor,
@@ -22,7 +25,10 @@ import type {
   BatchDetail,
   BatchListRow,
   EligibleSample,
+  EquipmentOption,
   MethodBatchOptions,
+  StepRailEntry,
+  StepRequiredType,
 } from "./types";
 
 // Batches are stored under org-composite keys like jobs (invariant 5).
@@ -66,6 +72,32 @@ export function canComposeBatch(actor: BatchActor, labId: string, methodId: stri
   return clearances.includes(methodId) ? null : "You are not cleared for this method.";
 }
 
+/** US-D3 set-back/void: Admin and Lab manager only, within their lab(s). */
+function canManageBatch(actor: BatchActor, labId: string): string | null {
+  if (actor.role !== "admin" && actor.role !== "lab-manager") {
+    return "Only Admins and Lab managers can do this.";
+  }
+  if (actor.role === "admin" || actor.isSupport) return null;
+  return actor.labs.includes(labNameById(labId))
+    ? null
+    : "You can only manage batches in your own lab(s).";
+}
+
+/** US-D3 complete step / worksheet upload: Admin, Lab manager, and Analysts
+ * CLEARED for the batch's method (US-A4 AC 6) — clearances read live. */
+export function canWorkBatch(actor: BatchActor, batch: MockBatch): string | null {
+  if (actor.role === "read-only") return "Read-only users cannot work on batches.";
+  if (actor.role === "admin" || actor.isSupport) return null;
+  if (!actor.labs.includes(labNameById(batch.labId))) {
+    return "You can only work on batches in your own lab(s).";
+  }
+  if (actor.role === "lab-manager") return null;
+  const clearances = mockDb.users.get(actor.email)?.clearances ?? [];
+  return clearances.includes(batch.methodId)
+    ? null
+    : "You are not cleared for this batch's method.";
+}
+
 function findSample(orgId: string, sampleId: string): { job: MockJob; sample: MockSample } | null {
   for (const job of mockDb.jobs.values()) {
     if (job.orgId !== orgId) continue;
@@ -87,13 +119,109 @@ function qcPositions(batch: { qc: { quantity: number }[] }): number {
   return batch.qc.reduce((sum, entry) => sum + entry.quantity, 0);
 }
 
-function addEvent(batch: MockBatch, actor: BatchActor, type: MockBatch["events"][number]["type"], summary: string): void {
+function addEvent(
+  batch: MockBatch,
+  actor: BatchActor,
+  type: MockBatchEvent["type"],
+  summary: string,
+  extra: Pick<MockBatchEvent, "step" | "equipmentUsed" | "setBack"> = {},
+): void {
   batch.events.push({
     id: `bev-${crypto.randomUUID()}`,
     at: new Date().toISOString(),
     by: actor.email,
     type,
     summary,
+    ...extra,
+  });
+}
+
+/** AC 8 — the status label is derived from phase + position, never hand-set. */
+function statusLabelFor(batch: MockBatch, pinned: MethodVersion): string {
+  if (batch.status === "voided") return "Voided";
+  if (batch.status === "completed") return "Completed";
+  if (batch.status === "awaiting-review") return "Awaiting review";
+  const step = pinned.steps[batch.currentStepIndex];
+  return `At step ${batch.currentStepIndex + 1} of ${pinned.steps.length} — ${step?.name ?? ""}`;
+}
+
+/** AC 9: the earliest job deadline among the batch's samples (informational). */
+function batchDeadline(batch: MockBatch): string | null {
+  let min: string | null = null;
+  for (const sampleId of batch.sampleIds) {
+    const due = findSample(batch.orgId, sampleId)?.job.dueDate.trim();
+    if (!due) continue;
+    if (min === null || due < min) min = due;
+  }
+  return min;
+}
+
+/** AC 4: per required type, the lab's items split into selectable options
+ * (Available, or Due soon with a warning) and Blocked items (never options,
+ * shown with why — US-B3's computed availability is the single source). */
+function requiredTypesFor(batch: MockBatch, step: MethodStep): StepRequiredType[] {
+  const warnDays = getOrgSettings(batch.orgId).equipment.calibrationWarningDays;
+  return step.requiredEquipmentTypes.map((typeId) => {
+    const options: EquipmentOption[] = [];
+    const blocked: StepRequiredType["blocked"] = [];
+    for (const eq of mockDb.equipment.values()) {
+      if (eq.orgId !== batch.orgId || eq.labId !== batch.labId) continue;
+      if (eq.typeId !== typeId || eq.status !== "active") continue;
+      const availability = equipmentAvailability(eq, warnDays);
+      if (availability.state === "blocked") {
+        blocked.push({ assetId: eq.assetId, name: eq.name, reasons: availability.blockedReasons });
+      } else {
+        options.push({
+          equipmentId: eq.id,
+          assetId: eq.assetId,
+          name: eq.name,
+          state: availability.state === "due-soon" ? "due-soon" : "available",
+          warning: availability.warnings[0] ?? null,
+        });
+      }
+    }
+    options.sort((a, b) => a.assetId.localeCompare(b.assetId));
+    return {
+      typeId,
+      typeName: mockDb.equipmentTypes.get(typeId)?.name ?? typeId,
+      options,
+      blocked,
+    };
+  });
+}
+
+/** AC 3: the Steps rail — one rendering of state + the append-only events. */
+function buildStepsRail(batch: MockBatch, pinned: MethodVersion): StepRailEntry[] {
+  // Latest completion per step index (a redo supersedes ON THE RAIL; every
+  // record stays in History — AC 6). Events are in append order.
+  const latest = new Map<number, MockBatchEvent>();
+  for (const ev of batch.events) {
+    if (ev.type === "step-completed" && ev.step) latest.set(ev.step.index, ev);
+  }
+  return pinned.steps.map((s, index) => {
+    const state: StepRailEntry["state"] =
+      batch.status === "awaiting-review" || batch.status === "completed"
+        ? "completed"
+        : index < batch.currentStepIndex
+          ? "completed"
+          : index === batch.currentStepIndex && batch.status === "open"
+            ? "current"
+            : "pending";
+    const ev = state === "completed" ? latest.get(index) : undefined;
+    return {
+      index,
+      id: s.id,
+      name: s.name,
+      state,
+      lastCompletion: ev
+        ? {
+            by: ev.by,
+            at: ev.at,
+            equipment: (ev.equipmentUsed ?? []).map((e) => `${e.name} (${e.assetId})`),
+          }
+        : null,
+      requiredTypes: state === "current" ? requiredTypesFor(batch, s) : [],
+    };
   });
 }
 
@@ -325,6 +453,8 @@ export const mockBatchApi: BatchApi = {
           methodVersion: b.methodVersion,
           stepName: pinned?.steps[b.currentStepIndex]?.name ?? `Step ${b.currentStepIndex + 1}`,
           status: b.status,
+          statusLabel: pinned ? statusLabelFor(b, pinned) : b.status,
+          deadline: batchDeadline(b),
           sampleCount: b.sampleIds.length,
           qcPositions: qcPositions(b),
           maxPositions: pinned?.maxSamplesPerBatch ?? 0,
@@ -385,6 +515,16 @@ export const mockBatchApi: BatchApi = {
           )
         : [],
       qcOptions: compositionOpen ? qcOptionsFor(actor.orgId, batch.labId, pinned) : [],
+      statusLabel: statusLabelFor(batch, pinned),
+      deadline: batchDeadline(batch),
+      steps: buildStepsRail(batch, pinned),
+      worksheets: batch.worksheets,
+      // History IS the event list — the tab renders this array directly,
+      // never a copy (AC 2/11).
+      events: batch.events,
+      sampleProgress: Object.fromEntries(
+        batch.sampleIds.map((id) => [id, sampleMethodProgress(actor.orgId, id, batch.methodId)]),
+      ),
     };
   },
 
@@ -459,6 +599,7 @@ export const mockBatchApi: BatchApi = {
       sampleIds: validated.sampleIds,
       qc: validated.qc,
       workingCopy: null,
+      worksheets: [], // US-D4 AC 9 versions; gates the final step (US-D3 AC 5)
       reagentLotIds: [], // AC 11 hook
       events: [],
       createdAt: new Date().toISOString(),
@@ -555,4 +696,247 @@ export const mockBatchApi: BatchApi = {
     if (!bytes) return null; // seed batches carry metadata only
     return { fileName: batch.workingCopy.fileName, bytes };
   },
+
+  // ---- US-D3: the step engine ---------------------------------------------
+
+  async completeStep(actor, batchId, expectedStepIndex, equipment): Promise<BatchActionResult> {
+    const batch = mockDb.batches.get(batchKey(actor.orgId, batchId));
+    if (!batch || batch.orgId !== actor.orgId) return { status: "error", message: "Unknown batch." };
+    const denied = canWorkBatch(actor, batch);
+    if (denied) return { status: "error", message: denied };
+    if (batch.status === "voided") {
+      return { status: "error", message: "A voided batch accepts no transitions." };
+    }
+    if (batch.status === "completed" || batch.status === "awaiting-review") {
+      return { status: "error", message: "This batch has finished its steps — it is with review." };
+    }
+    // AC 10 concurrency: the client says which step it THINKS is current; a
+    // stale value (someone else advanced or set back meanwhile) fails safely.
+    if (expectedStepIndex !== batch.currentStepIndex) {
+      return {
+        status: "error",
+        message: "This batch changed while you were looking — refresh the page and try again.",
+      };
+    }
+
+    const method = mockDb.methods.get(batch.methodId);
+    if (!method) return { status: "error", message: "Unknown method." };
+    const pinned = methodVersionByNumber(method, batch.methodVersion);
+    const step = pinned.steps[batch.currentStepIndex];
+    if (!step) return { status: "error", message: "The batch is not at a valid step — refresh." };
+
+    // AC 4: one specific item per required type, from this lab, never Blocked.
+    // Availability is recomputed server-side at THIS moment — the UI list is
+    // presentation, not the gate (invariant 4).
+    const submitted = new Map<string, string>();
+    for (const e of equipment) {
+      if (submitted.has(e.typeId)) {
+        return { status: "error", message: "Duplicate equipment type in the selection." };
+      }
+      submitted.set(e.typeId, e.equipmentId);
+    }
+    const warnDays = getOrgSettings(batch.orgId).equipment.calibrationWarningDays;
+    const used: NonNullable<MockBatchEvent["equipmentUsed"]> = [];
+    for (const typeId of step.requiredEquipmentTypes) {
+      const typeName = mockDb.equipmentTypes.get(typeId)?.name ?? typeId;
+      const equipmentId = submitted.get(typeId);
+      if (!equipmentId) {
+        const anySelectable = requiredTypesFor(batch, step).some(
+          (rt) => rt.typeId === typeId && rt.options.length > 0,
+        );
+        return {
+          status: "error",
+          message: anySelectable
+            ? `Select the ${typeName} used for this step.`
+            : `No usable ${typeName} in this lab — the step cannot be completed until one is fit for use (US-B3).`,
+        };
+      }
+      const eq = mockDb.equipment.get(equipmentId);
+      if (!eq || eq.orgId !== actor.orgId || eq.labId !== batch.labId || eq.typeId !== typeId || eq.status !== "active") {
+        return { status: "error", message: `The selected ${typeName} is not a valid choice for this step.` };
+      }
+      const availability = equipmentAvailability(eq, warnDays);
+      if (availability.state === "blocked") {
+        return {
+          status: "error",
+          message: `${eq.name} (${eq.assetId}) is Blocked — ${availability.blockedReasons[0]}.`,
+        };
+      }
+      used.push({ equipmentId: eq.id, assetId: eq.assetId, name: eq.name, typeName });
+      submitted.delete(typeId);
+    }
+    if (submitted.size > 0) {
+      return {
+        status: "error",
+        message: "The equipment selection does not match this step's required types — refresh and try again.",
+      };
+    }
+
+    const isFinal = batch.currentStepIndex === pinned.steps.length - 1;
+    // AC 5 (US-D4 AC 9 gate): review judges a stable record — the completed
+    // worksheet must be attached before the final step can complete.
+    if (isFinal && batch.worksheets.length === 0) {
+      return {
+        status: "error",
+        message:
+          "Attach the completed worksheet (Files tab) before completing the final step — the transition to review is gated on it (US-D4).",
+      };
+    }
+
+    // The first recorded work flips the ONE-WAY latch (US-D1 AC 10).
+    batch.compositionLatched = true;
+    const equipmentNote = used.length
+      ? ` — ${used.map((u) => `${u.name} (${u.assetId})`).join(", ")}`
+      : "";
+    addEvent(
+      batch,
+      actor,
+      "step-completed",
+      `Step ${batch.currentStepIndex + 1} "${step.name}" completed${equipmentNote}${isFinal ? " — batch moved to Awaiting review" : ""}`,
+      {
+        step: { index: batch.currentStepIndex, id: step.id, name: step.name },
+        equipmentUsed: used.length ? used : undefined,
+      },
+    );
+    if (isFinal) {
+      batch.status = "awaiting-review"; // AC 5 — a system phase, not a step
+    } else {
+      batch.currentStepIndex += 1;
+    }
+    return { status: "success", batchId };
+  },
+
+  async setBackStep(actor, batchId, toStepIndex, reason): Promise<BatchActionResult> {
+    const batch = mockDb.batches.get(batchKey(actor.orgId, batchId));
+    if (!batch || batch.orgId !== actor.orgId) return { status: "error", message: "Unknown batch." };
+    const denied = canManageBatch(actor, batch.labId);
+    if (denied) return { status: "error", message: denied };
+    if (batch.status === "voided" || batch.status === "completed") {
+      return { status: "error", message: "A voided or completed batch accepts no transitions." };
+    }
+    if (!reason.trim()) {
+      return { status: "error", message: "A reason is required to set a batch back." };
+    }
+    const method = mockDb.methods.get(batch.methodId);
+    if (!method) return { status: "error", message: "Unknown method." };
+    const pinned = methodVersionByNumber(method, batch.methodVersion);
+    // From Awaiting review any step may be targeted; from an open batch only
+    // an EARLIER step (AC 6).
+    const fromReview = batch.status === "awaiting-review";
+    const maxTarget = fromReview ? pinned.steps.length - 1 : batch.currentStepIndex - 1;
+    if (!Number.isInteger(toStepIndex) || toStepIndex < 0 || toStepIndex > maxTarget) {
+      return { status: "error", message: "Choose an earlier step to set the batch back to." };
+    }
+    const target = pinned.steps[toStepIndex];
+    const fromLabel = fromReview
+      ? "Awaiting review"
+      : `step ${batch.currentStepIndex + 1} "${pinned.steps[batch.currentStepIndex]?.name ?? ""}"`;
+    addEvent(
+      batch,
+      actor,
+      "set-back",
+      `Set back from ${fromLabel} to step ${toStepIndex + 1} "${target.name}" — ${reason.trim()}`,
+      {
+        setBack: {
+          // Awaiting review is encoded as one past the last step index.
+          fromIndex: fromReview ? pinned.steps.length : batch.currentStepIndex,
+          toIndex: toStepIndex,
+          reason: reason.trim(),
+        },
+      },
+    );
+    batch.status = "open";
+    batch.currentStepIndex = toStepIndex;
+    // Deliberately NOT touched: compositionLatched — a set-back is rework and
+    // never reopens composition (US-D1 AC 10 mirror; hard-never list).
+    return { status: "success", batchId };
+  },
+
+  async voidBatch(actor, batchId, reason): Promise<BatchActionResult> {
+    const batch = mockDb.batches.get(batchKey(actor.orgId, batchId));
+    if (!batch || batch.orgId !== actor.orgId) return { status: "error", message: "Unknown batch." };
+    const denied = canManageBatch(actor, batch.labId);
+    if (denied) return { status: "error", message: denied };
+    if (batch.status === "voided") return { status: "error", message: "This batch is already voided." };
+    if (batch.status === "completed") {
+      return { status: "error", message: "A completed batch cannot be voided." };
+    }
+    if (!reason.trim()) return { status: "error", message: "A reason is required to void a batch." };
+    // Void, never delete (AC 7): the record, its files and its history stay;
+    // the samples' per-method state returns to Received automatically because
+    // the derived view skips voided batches (US-D1 decision). Results already
+    // recorded can never become valid — enforced where results live (US-D4).
+    batch.status = "voided";
+    batch.voidReason = reason.trim();
+    addEvent(batch, actor, "voided", `Batch voided — ${reason.trim()}`);
+    return { status: "success", batchId };
+  },
+
+  async uploadWorksheet(actor, batchId, file): Promise<BatchActionResult> {
+    const batch = mockDb.batches.get(batchKey(actor.orgId, batchId));
+    if (!batch || batch.orgId !== actor.orgId) return { status: "error", message: "Unknown batch." };
+    const denied = canWorkBatch(actor, batch);
+    if (denied) return { status: "error", message: denied };
+    if (batch.status !== "open") {
+      return {
+        status: "error",
+        message: "Worksheets can only be uploaded while the batch is being worked — during review the record is closed (a set-back reopens it).",
+      };
+    }
+    if (file.bytes.length === 0) return { status: "error", message: "The uploaded file is empty." };
+    if (file.bytes.length > 5 * 1024 * 1024) {
+      return { status: "error", message: "Worksheets are limited to 5 MB in the mock." };
+    }
+    // US-D4 AC 9: replacing = a NEW version appended; nothing is overwritten.
+    const attachment = {
+      id: `att-ws-${crypto.randomUUID()}`,
+      fileName: file.fileName,
+      sizeBytes: file.bytes.length,
+      sha256: createHash("sha256").update(file.bytes).digest("hex"),
+      uploadedAt: new Date().toISOString(),
+      uploadedBy: actor.email,
+    };
+    batch.worksheets.push(attachment);
+    mockDb.batchFiles.set(`${batch.orgId}:ws:${attachment.id}`, new Uint8Array(file.bytes));
+    addEvent(
+      batch,
+      actor,
+      "worksheet-uploaded",
+      `Completed worksheet v${batch.worksheets.length}: ${file.fileName} (sha256 ${attachment.sha256.slice(0, 16)}…)`,
+    );
+    return { status: "success", batchId };
+  },
 };
+
+/** US-C3 AC 10 / US-D3 AC 1: the batches containing any of a job's samples,
+ * for the job detail's Batches tab. Same-org only (invariant 5). */
+export function batchesForJobSamples(
+  orgId: string,
+  sampleIds: string[],
+): {
+  id: string;
+  methodLabel: string;
+  methodVersion: number;
+  status: MockBatch["status"];
+  statusLabel: string;
+  containedSampleIds: string[];
+}[] {
+  const wanted = new Set(sampleIds);
+  const out: ReturnType<typeof batchesForJobSamples> = [];
+  for (const b of mockDb.batches.values()) {
+    if (b.orgId !== orgId) continue;
+    const containedSampleIds = b.sampleIds.filter((id) => wanted.has(id));
+    if (containedSampleIds.length === 0) continue;
+    const method = mockDb.methods.get(b.methodId);
+    const pinned = method ? methodVersionByNumber(method, b.methodVersion) : null;
+    out.push({
+      id: b.id,
+      methodLabel: pinned ? methodLabel(pinned) : b.methodId,
+      methodVersion: b.methodVersion,
+      status: b.status,
+      statusLabel: pinned ? statusLabelFor(b, pinned) : b.status,
+      containedSampleIds,
+    });
+  }
+  return out.sort((a, b) => a.id.localeCompare(b.id));
+}

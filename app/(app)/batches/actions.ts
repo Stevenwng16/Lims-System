@@ -60,6 +60,83 @@ export async function createBatchAction(
   redirect(`/batches/${result.batchId}`); // sketch: the batch detail opens
 }
 
+export async function completeStepAction(
+  _prev: BatchFormState,
+  formData: FormData,
+): Promise<BatchFormState> {
+  const actor = await resolveBatchActor();
+  const batchId = String(formData.get("batchId") ?? "");
+  let equipment: { typeId: string; equipmentId: string }[];
+  try {
+    const parsed = JSON.parse(String(formData.get("equipmentJson") ?? "[]")) as unknown[];
+    equipment = parsed.map((e) => {
+      const item = e as { typeId?: unknown; equipmentId?: unknown };
+      return { typeId: String(item.typeId ?? ""), equipmentId: String(item.equipmentId ?? "") };
+    });
+  } catch {
+    return { error: "The equipment selection could not be read — reload and try again." };
+  }
+  const result = await batchApi.completeStep(
+    actor,
+    batchId,
+    Number(formData.get("expectedStepIndex")), // AC 10 concurrency token
+    equipment,
+  );
+  if (result.status === "error") return { error: result.message };
+  revalidatePath("/batches");
+  revalidatePath(`/batches/${batchId}`);
+  revalidatePath("/jobs"); // derived sample/job statuses follow the workflow
+  return { success: true };
+}
+
+export async function setBackAction(
+  _prev: BatchFormState,
+  formData: FormData,
+): Promise<BatchFormState> {
+  const actor = await resolveBatchActor();
+  const batchId = String(formData.get("batchId") ?? "");
+  const result = await batchApi.setBackStep(
+    actor,
+    batchId,
+    Number(formData.get("toStepIndex")),
+    String(formData.get("reason") ?? ""),
+  );
+  if (result.status === "error") return { error: result.message };
+  revalidatePath("/batches");
+  revalidatePath(`/batches/${batchId}`);
+  return { success: true };
+}
+
+export async function voidBatchAction(
+  _prev: BatchFormState,
+  formData: FormData,
+): Promise<BatchFormState> {
+  const actor = await resolveBatchActor();
+  const batchId = String(formData.get("batchId") ?? "");
+  const result = await batchApi.voidBatch(actor, batchId, String(formData.get("reason") ?? ""));
+  if (result.status === "error") return { error: result.message };
+  revalidatePath("/batches");
+  revalidatePath(`/batches/${batchId}`);
+  revalidatePath("/jobs"); // voided batch → samples derive back to Received
+  return { success: true };
+}
+
+export async function uploadWorksheetAction(
+  _prev: BatchFormState,
+  formData: FormData,
+): Promise<BatchFormState> {
+  const actor = await resolveBatchActor();
+  const batchId = String(formData.get("batchId") ?? "");
+  const file = formData.get("file");
+  if (!(file instanceof File) || file.size === 0) return { error: "Choose a file to upload." };
+  if (file.size > 5 * 1024 * 1024) return { error: "Worksheets are limited to 5 MB in the mock." };
+  const bytes = new Uint8Array(await file.arrayBuffer());
+  const result = await batchApi.uploadWorksheet(actor, batchId, { fileName: file.name, bytes });
+  if (result.status === "error") return { error: result.message };
+  revalidatePath(`/batches/${batchId}`);
+  return { success: true };
+}
+
 export async function updateCompositionAction(
   _prev: BatchFormState,
   formData: FormData,

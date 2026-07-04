@@ -1,4 +1,5 @@
 import { notFound } from "next/navigation";
+import { equipmentApi } from "@/lib/equipment";
 import { labApi } from "@/lib/labs";
 import { methodApi } from "@/lib/methods";
 import {
@@ -42,6 +43,11 @@ export default async function MethodDetailPage({
     (t) => t.version === method.current.templateVersion,
   );
 
+  // Per-step required equipment types (US-B1 AC 8 / US-D3 AC 4).
+  const equipmentTypes = (await equipmentApi.listTypes({ ...actor, isSupport: false })).map(
+    (t) => ({ id: t.id, name: t.name, status: t.status }),
+  );
+
   return (
     <div className="mx-auto max-w-3xl space-y-6">
       <Breadcrumb>
@@ -80,6 +86,7 @@ export default async function MethodDetailPage({
       <MethodForm
         methodId={method.id}
         labs={labs}
+        equipmentTypes={equipmentTypes}
         readOnly={!canManage}
         usedByBatches={method.usedByBatches}
         initial={{
@@ -89,7 +96,11 @@ export default async function MethodDetailPage({
           description: method.current.description,
           accredited: method.current.accredited,
           maxSamplesPerBatch: method.current.maxSamplesPerBatch,
-          steps: method.current.steps.map((s) => ({ id: s.id, name: s.name })),
+          steps: method.current.steps.map((s) => ({
+            id: s.id,
+            name: s.name,
+            requiredEquipmentTypes: s.requiredEquipmentTypes,
+          })),
           analytes: method.current.analytes,
         }}
       />

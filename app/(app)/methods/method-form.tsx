@@ -21,12 +21,16 @@ import { Textarea } from "@/components/ui/textarea";
 
 const initialState: MethodFormState = {};
 
-type StepRow = { id: string; name: string };
+type StepRow = { id: string; name: string; requiredEquipmentTypes: string[] };
 type LabOption = { id: string; name: string };
+type EquipmentTypeOption = { id: string; name: string; status: "active" | "inactive" };
 
 type Props = {
   methodId?: string; // absent = create
   labs: LabOption[];
+  // The org's equipment-type list (US-B3) — per-step requirements drive the
+  // step-completion equipment gating (US-B1 AC 8 / US-D3 AC 4).
+  equipmentTypes: EquipmentTypeOption[];
   readOnly: boolean;
   usedByBatches: boolean;
   initial: {
@@ -48,7 +52,7 @@ function localId(prefix: string): string {
   return `${prefix}-${crypto.randomUUID()}`;
 }
 
-export function MethodForm({ methodId, labs, readOnly, usedByBatches, initial }: Props) {
+export function MethodForm({ methodId, labs, equipmentTypes, readOnly, usedByBatches, initial }: Props) {
   const action = methodId ? updateMethodAction : createMethodAction;
   const [state, submit, pending] = useActionState(action, initialState);
   const [steps, setSteps] = useState<StepRow[]>(initial.steps);
@@ -150,31 +154,69 @@ export function MethodForm({ methodId, labs, readOnly, usedByBatches, initial }:
       <fieldset className="space-y-3">
         <legend className="text-sm font-medium">Process steps (ordered — drives the batch workflow)</legend>
         {steps.map((step, i) => (
-          <div key={step.id} className="flex items-center gap-2">
-            <span className="w-6 text-right text-sm tabular-nums text-muted-foreground">
-              {i + 1}.
-            </span>
-            <Input
-              value={step.name}
-              onChange={(e) =>
-                setSteps((rows) => rows.map((s) => (s.id === step.id ? { ...s, name: e.target.value } : s)))
-              }
-              className="w-64"
-              disabled={readOnly}
-              aria-label={`Step ${i + 1} name`}
-            />
-            {!readOnly && (
-              <>
-                <Button type="button" variant="ghost" size="icon-xs" aria-label="Move step up" onClick={() => moveStep(i, -1)} disabled={i === 0}>
-                  <ArrowUp />
-                </Button>
-                <Button type="button" variant="ghost" size="icon-xs" aria-label="Move step down" onClick={() => moveStep(i, 1)} disabled={i === steps.length - 1}>
-                  <ArrowDown />
-                </Button>
-                <Button type="button" variant="ghost" size="icon-xs" aria-label="Remove step" onClick={() => setSteps((rows) => rows.filter((s) => s.id !== step.id))}>
-                  <X />
-                </Button>
-              </>
+          <div key={step.id} className="space-y-1">
+            <div className="flex items-center gap-2">
+              <span className="w-6 text-right text-sm tabular-nums text-muted-foreground">
+                {i + 1}.
+              </span>
+              <Input
+                value={step.name}
+                onChange={(e) =>
+                  setSteps((rows) => rows.map((s) => (s.id === step.id ? { ...s, name: e.target.value } : s)))
+                }
+                className="w-64"
+                disabled={readOnly}
+                aria-label={`Step ${i + 1} name`}
+              />
+              {!readOnly && (
+                <>
+                  <Button type="button" variant="ghost" size="icon-xs" aria-label="Move step up" onClick={() => moveStep(i, -1)} disabled={i === 0}>
+                    <ArrowUp />
+                  </Button>
+                  <Button type="button" variant="ghost" size="icon-xs" aria-label="Move step down" onClick={() => moveStep(i, 1)} disabled={i === steps.length - 1}>
+                    <ArrowDown />
+                  </Button>
+                  <Button type="button" variant="ghost" size="icon-xs" aria-label="Remove step" onClick={() => setSteps((rows) => rows.filter((s) => s.id !== step.id))}>
+                    <X />
+                  </Button>
+                </>
+              )}
+            </div>
+            {/* US-B1 AC 8 / US-D3 AC 4: completing a step with required types
+                forces selecting the specific item used (Blocked never). Active
+                types are offered; an inactive type a step already holds stays
+                visible (grandfathered) until unchecked. */}
+            {equipmentTypes.length > 0 && (
+              <div className="ml-8 flex flex-wrap items-center gap-x-4 gap-y-1 text-xs">
+                <span className="text-muted-foreground">Requires equipment:</span>
+                {equipmentTypes
+                  .filter((t) => t.status === "active" || step.requiredEquipmentTypes.includes(t.id))
+                  .map((t) => (
+                    <label key={t.id} className="flex items-center gap-1.5">
+                      <Checkbox
+                        checked={step.requiredEquipmentTypes.includes(t.id)}
+                        disabled={readOnly}
+                        onCheckedChange={(c) =>
+                          setSteps((rows) =>
+                            rows.map((s) =>
+                              s.id === step.id
+                                ? {
+                                    ...s,
+                                    requiredEquipmentTypes:
+                                      c === true
+                                        ? [...s.requiredEquipmentTypes, t.id]
+                                        : s.requiredEquipmentTypes.filter((id) => id !== t.id),
+                                  }
+                                : s,
+                            ),
+                          )
+                        }
+                      />
+                      {t.name}
+                      {t.status === "inactive" && " (inactive)"}
+                    </label>
+                  ))}
+              </div>
             )}
           </div>
         ))}
@@ -183,7 +225,9 @@ export function MethodForm({ methodId, labs, readOnly, usedByBatches, initial }:
             type="button"
             variant="outline"
             size="sm"
-            onClick={() => setSteps((rows) => [...rows, { id: localId("s"), name: "" }])}
+            onClick={() =>
+              setSteps((rows) => [...rows, { id: localId("s"), name: "", requiredEquipmentTypes: [] }])
+            }
           >
             + Add step
           </Button>

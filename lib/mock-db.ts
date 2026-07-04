@@ -290,12 +290,30 @@ export type BatchQcEntry = {
   quantity: number; // ≥1; each unit occupies a position (AC 6/7)
 };
 
+// One list is the whole workflow history (US-D3 decision 3 Jul 2026): every
+// transition is appended here, and the Steps rail + History tab are just two
+// renderings of it. Structured payloads make the records queryable proof —
+// the batch shows WHICH balance was used, not just prose about it.
 export type MockBatchEvent = {
   id: string;
   at: string; // ISO datetime
   by: string;
-  type: "created" | "composition-changed" | "working-copy-generated";
+  type:
+    | "created"
+    | "composition-changed"
+    | "working-copy-generated"
+    | "step-completed"
+    | "set-back"
+    | "voided"
+    | "worksheet-uploaded";
   summary: string;
+  /** step-completed: which step (a redo appends a NEW record, AC 6). */
+  step?: { index: number; id: string; name: string };
+  /** step-completed: the specific items used per required type (AC 4) —
+   * resolved snapshot at the moment of completion (§6.4/§7.5). */
+  equipmentUsed?: { equipmentId: string; assetId: string; name: string; typeName: string }[];
+  /** set-back: who/when live on the event; from → to + why here (AC 6). */
+  setBack?: { fromIndex: number; toIndex: number; reason: string };
 };
 
 export type MockBatch = {
@@ -305,7 +323,10 @@ export type MockBatch = {
   methodId: string;
   methodVersion: number; // pinned at creation (AC 1) — never changes
   templateVersion: number | null; // the template version that method version pins
-  status: "open" | "completed" | "voided"; // void (US-D3) / completion (US-D6)
+  // US-D3 AC 8: the phase is DERIVED by transitions, never hand-set — "open"
+  // renders as "At step x of n"; "awaiting-review" is the system phase after
+  // the last method step (AC 5); US-D6 completes; void keeps everything.
+  status: "open" | "awaiting-review" | "completed" | "voided";
   voidReason?: string;
   currentStepIndex: number; // 0-based into the PINNED version's steps (AC 9)
   compositionLatched: boolean; // one-way (AC 10) — set true by US-D3/D4, never unset
@@ -317,6 +338,9 @@ export type MockBatch = {
     sha256: string; // ADR-4: checksum recorded at generation
     generatedAt: string;
   } | null;
+  // Completed-worksheet versions (US-D4 AC 9, gate consumed by US-D3 AC 5):
+  // append-only — replacing uploads a NEW version, the last entry is current.
+  worksheets: Attachment[];
   reagentLotIds: string[]; // AC 11 design hook — post-MVP story fills it
   events: MockBatchEvent[]; // append-only (AC 13)
   createdAt: string; // ISO datetime — permanently carried (AC 13)
@@ -693,10 +717,10 @@ function seedDb(): MockDb {
     uploadedBy: "admin@demolab.nl",
     hasResultsSheet,
   });
-  const step = (id: string, name: string): MethodStep => ({
+  const step = (id: string, name: string, requiredEquipmentTypes: string[] = []): MethodStep => ({
     id,
     name,
-    requiredEquipmentTypes: [],
+    requiredEquipmentTypes, // US-B1 AC 8 hook — drives US-D3's equipment gating
     inputValidationRule: null,
   });
   methods.set("m-ph", {
@@ -738,9 +762,13 @@ function seedDb(): MockDb {
         accredited: true,
         maxSamplesPerBatch: 40,
         steps: [
-          step("s1", "Sample prep"),
+          // Required types demo (US-D3 AC 4): Sample prep needs a Balance
+          // (BAL-001 available, BAL-002 blocked → the select shows both
+          // cases); Measurement needs an ICP (ICP-01, calibration due soon →
+          // selectable with a warning).
+          step("s1", "Sample prep", ["eqt-bal"]),
           step("s2", "Digestion"),
-          step("s3", "Measurement"),
+          step("s3", "Measurement", ["eqt-icp"]),
           step("s4", "Review"),
           step("s5", "Report"),
         ],
@@ -770,7 +798,9 @@ function seedDb(): MockDb {
         description: "Electrical conductivity at 25 °C",
         accredited: false,
         maxSamplesPerBatch: 30,
-        steps: [step("s1", "Measurement"), step("s2", "Review")],
+        // eqt-ph's only Water item (PH-03) is Blocked (failed check) — demos
+        // the "required type with zero selectable items" hard stop (US-D3).
+        steps: [step("s1", "Measurement", ["eqt-ph"]), step("s2", "Review")],
         analytes: [{ id: "a1", name: "Conductivity", unit: "µS/cm", decimals: 1, loq: null }],
         templateVersion: 1,
         createdAt: "2 Jun 2026",
@@ -1005,11 +1035,13 @@ function seedDb(): MockDb {
     ],
     createdAt: "10 Jan 2026",
   });
-  // Due soon — calibration due date inside the (default 30-day) warning window.
+  // Due soon — calibration due date inside the (default 30-day) warning
+  // window. In the Metals lab so m-icpms' Measurement step can select it
+  // (with the warning) during US-D3 equipment gating.
   equipment.set("eq-icp01", {
     id: "eq-icp01",
     orgId: "org-demolab",
-    labId: "lab-wat",
+    labId: "lab-met",
     name: "ICP-OES",
     assetId: "ICP-01",
     typeId: "eqt-icp",
@@ -1326,9 +1358,25 @@ function seedDb(): MockDb {
       sha256: "seed-checksum-no-real-file-0000000000000000000000000000000000000000",
       generatedAt: "2026-06-21T09:00:00.000Z",
     },
+    worksheets: [
+      {
+        id: "att-ws-b1-1",
+        fileName: "worksheet_METB26-0001_completed.xlsx",
+        sizeBytes: 31_744,
+        sha256: "seed-checksum-no-real-file-0000000000000000000000000000000000000000",
+        uploadedAt: "2026-06-24T15:40:00.000Z",
+        uploadedBy: "analyst@demolab.nl",
+      },
+    ],
     reagentLotIds: [],
     events: [
       { id: "bev-1-created", at: "2026-06-21T09:00:00.000Z", by: "labmanager@demolab.nl", type: "created", summary: "Batch created: 1 sample + 1 QC position (m-icpms v1)" },
+      { id: "bev-1-s1", at: "2026-06-21T10:05:00.000Z", by: "analyst@demolab.nl", type: "step-completed", summary: "Step 1 \"Sample prep\" completed — Analytical balance 1 (BAL-001)", step: { index: 0, id: "s1", name: "Sample prep" }, equipmentUsed: [{ equipmentId: "eq-bal001", assetId: "BAL-001", name: "Analytical balance 1", typeName: "Balance" }] },
+      { id: "bev-1-s2", at: "2026-06-22T09:20:00.000Z", by: "analyst@demolab.nl", type: "step-completed", summary: "Step 2 \"Digestion\" completed", step: { index: 1, id: "s2", name: "Digestion" } },
+      { id: "bev-1-s3", at: "2026-06-23T11:00:00.000Z", by: "analyst@demolab.nl", type: "step-completed", summary: "Step 3 \"Measurement\" completed — ICP-OES (ICP-01)", step: { index: 2, id: "s3", name: "Measurement" }, equipmentUsed: [{ equipmentId: "eq-icp01", assetId: "ICP-01", name: "ICP-OES", typeName: "ICP-OES" }] },
+      { id: "bev-1-s4", at: "2026-06-24T14:00:00.000Z", by: "labmanager@demolab.nl", type: "step-completed", summary: "Step 4 \"Review\" completed", step: { index: 3, id: "s4", name: "Review" } },
+      { id: "bev-1-ws", at: "2026-06-24T15:40:00.000Z", by: "analyst@demolab.nl", type: "worksheet-uploaded", summary: "Completed worksheet v1: worksheet_METB26-0001_completed.xlsx" },
+      { id: "bev-1-s5", at: "2026-06-24T16:00:00.000Z", by: "labmanager@demolab.nl", type: "step-completed", summary: "Step 5 \"Report\" completed — batch moved to Awaiting review", step: { index: 4, id: "s5", name: "Report" } },
     ],
     createdAt: "2026-06-21T09:00:00.000Z",
     createdBy: "labmanager@demolab.nl",
@@ -1351,9 +1399,12 @@ function seedDb(): MockDb {
       sha256: "seed-checksum-no-real-file-0000000000000000000000000000000000000000",
       generatedAt: "2026-06-28T10:15:00.000Z",
     },
+    worksheets: [],
     reagentLotIds: [],
     events: [
       { id: "bev-2-created", at: "2026-06-28T10:15:00.000Z", by: "labmanager@demolab.nl", type: "created", summary: "Batch created: 1 sample + 2 QC positions (m-icpms v1)" },
+      { id: "bev-2-s1", at: "2026-06-28T11:30:00.000Z", by: "analyst@demolab.nl", type: "step-completed", summary: "Step 1 \"Sample prep\" completed — Analytical balance 1 (BAL-001)", step: { index: 0, id: "s1", name: "Sample prep" }, equipmentUsed: [{ equipmentId: "eq-bal001", assetId: "BAL-001", name: "Analytical balance 1", typeName: "Balance" }] },
+      { id: "bev-2-s2", at: "2026-06-29T09:45:00.000Z", by: "analyst@demolab.nl", type: "step-completed", summary: "Step 2 \"Digestion\" completed", step: { index: 1, id: "s2", name: "Digestion" } },
     ],
     createdAt: "2026-06-28T10:15:00.000Z",
     createdBy: "labmanager@demolab.nl",
@@ -1385,7 +1436,7 @@ function seedDb(): MockDb {
   };
 }
 
-export const mockDb: MockDb = ((globalThis as Record<string, unknown>).__limsMockDbV17 ??=
+export const mockDb: MockDb = ((globalThis as Record<string, unknown>).__limsMockDbV18 ??=
   seedDb()) as MockDb;
 
 export function getOrgSettings(orgId: string): OrgSettings {

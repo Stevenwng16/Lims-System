@@ -1,4 +1,5 @@
 import { redirect } from "next/navigation";
+import { equipmentApi } from "@/lib/equipment";
 import { labApi } from "@/lib/labs";
 import {
   Breadcrumb,
@@ -22,6 +23,11 @@ export default async function NewMethodPage() {
     .filter((lab) => actor.role === "admin" || actor.labs.includes(lab.name))
     .map((lab) => ({ id: lab.id, name: lab.name }));
 
+  // Per-step required equipment types (US-B1 AC 8 / US-D3 AC 4).
+  const equipmentTypes = (await equipmentApi.listTypes({ ...actor, isSupport: false })).map(
+    (t) => ({ id: t.id, name: t.name, status: t.status }),
+  );
+
   return (
     <div className="mx-auto max-w-3xl space-y-6">
       <Breadcrumb>
@@ -41,6 +47,7 @@ export default async function NewMethodPage() {
       </p>
       <MethodForm
         labs={labs}
+        equipmentTypes={equipmentTypes}
         readOnly={false}
         usedByBatches={false}
         initial={{
@@ -50,7 +57,7 @@ export default async function NewMethodPage() {
           description: "",
           accredited: false,
           maxSamplesPerBatch: 20,
-          steps: [{ id: "s-initial-1", name: "" }],
+          steps: [{ id: "s-initial-1", name: "", requiredEquipmentTypes: [] }],
           analytes: [{ id: "a-initial-1", name: "", unit: "", decimals: 2, loq: null }],
         }}
       />

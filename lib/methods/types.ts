@@ -37,7 +37,10 @@ export type MethodInput = {
   description: string;
   accredited: boolean;
   maxSamplesPerBatch: number;
-  steps: Pick<MethodStep, "id" | "name">[]; // hooks (equipment, validation rules) preserved server-side
+  // requiredEquipmentTypes fills the AC 8 hook (configurable since US-D3 —
+  // it drives step-completion equipment gating); the inputValidationRule hook
+  // stays preserved server-side.
+  steps: Pick<MethodStep, "id" | "name" | "requiredEquipmentTypes">[];
   analytes: MethodAnalyte[];
 };
 

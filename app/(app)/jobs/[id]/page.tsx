@@ -1,4 +1,5 @@
 import { notFound } from "next/navigation";
+import { batchesForJobSamples } from "@/lib/batches";
 import { sampleStatus } from "@/lib/batches/progress";
 import { deriveJobStatus, isJobOverdue, jobApi, type JobView } from "@/lib/jobs";
 import { labApi } from "@/lib/labs";
@@ -121,6 +122,10 @@ export default async function JobDetailPage({ params }: { params: Promise<{ id: 
       <JobDetail
         job={jobView}
         jobLabel={settings.jobLabel}
+        batches={batchesForJobSamples(
+          actor.orgId,
+          job.samples.map((s) => s.id),
+        )}
         labName={labName}
         typeNames={typeNames}
         methodNames={methodNames}

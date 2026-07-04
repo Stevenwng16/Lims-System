@@ -18,6 +18,13 @@ export function BatchStatusBadge({ status }: { status: BatchListRow["status"] })
       <Badge className="border-transparent bg-sky-500/15 text-sky-700 dark:text-sky-400">Open</Badge>
     );
   }
+  if (status === "awaiting-review") {
+    return (
+      <Badge className="border-transparent bg-violet-500/15 text-violet-700 dark:text-violet-400">
+        Awaiting review
+      </Badge>
+    );
+  }
   if (status === "completed") {
     return (
       <Badge className="border-transparent bg-emerald-500/15 text-emerald-700 dark:text-emerald-400">
@@ -38,9 +45,10 @@ export function BatchList({ rows }: { rows: BatchListRow[] }) {
             <TableRow>
               <TableHead>Batch</TableHead>
               <TableHead>Method</TableHead>
-              <TableHead>Step</TableHead>
+              <TableHead>Position</TableHead>
               <TableHead className="text-right">Positions</TableHead>
               <TableHead>Status</TableHead>
+              <TableHead>Due</TableHead>
               <TableHead>Created</TableHead>
             </TableRow>
           </TableHeader>
@@ -56,7 +64,7 @@ export function BatchList({ rows }: { rows: BatchListRow[] }) {
                   {row.methodLabel}{" "}
                   <span className="text-xs text-muted-foreground">v{row.methodVersion}</span>
                 </TableCell>
-                <TableCell>{row.status === "open" ? row.stepName : "—"}</TableCell>
+                <TableCell className="text-sm">{row.status === "open" ? row.statusLabel : "—"}</TableCell>
                 <TableCell className="text-right tabular-nums">
                   {row.sampleCount + row.qcPositions}/{row.maxPositions}
                   <span className="ml-1 text-xs text-muted-foreground">
@@ -66,6 +74,7 @@ export function BatchList({ rows }: { rows: BatchListRow[] }) {
                 <TableCell>
                   <BatchStatusBadge status={row.status} />
                 </TableCell>
+                <TableCell className="text-sm">{row.deadline ?? "—"}</TableCell>
                 <TableCell className="text-sm text-muted-foreground">
                   {row.createdAt.slice(0, 10)}
                 </TableCell>
@@ -73,7 +82,7 @@ export function BatchList({ rows }: { rows: BatchListRow[] }) {
             ))}
             {rows.length === 0 && (
               <TableRow>
-                <TableCell colSpan={6} className="text-center text-muted-foreground">
+                <TableCell colSpan={7} className="text-center text-muted-foreground">
                   No batches in this lab yet.
                 </TableCell>
               </TableRow>

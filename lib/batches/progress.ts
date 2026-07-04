@@ -71,7 +71,9 @@ export function sampleStatus(orgId: string, sample: MockSample): SampleLifecycle
 }
 
 /** US-D1 AC 3(d): the open batch of the SAME method a sample already sits in,
- * if any — one open batch per (sample × method) prevents double work. */
+ * if any — one open batch per (sample × method) prevents double work. A batch
+ * in Awaiting review (US-D3) still counts: a set-back could reopen its work,
+ * so the sample is not free for that method until completion or void. */
 export function openBatchOfMethodContaining(
   orgId: string,
   sampleId: string,
@@ -79,7 +81,8 @@ export function openBatchOfMethodContaining(
   excludeBatchId?: string,
 ): MockBatch | null {
   for (const batch of batchesContaining(orgId, sampleId)) {
-    if (batch.status !== "open" || batch.methodId !== methodId) continue;
+    if (batch.methodId !== methodId) continue;
+    if (batch.status !== "open" && batch.status !== "awaiting-review") continue;
     if (batch.id === excludeBatchId) continue;
     return batch;
   }

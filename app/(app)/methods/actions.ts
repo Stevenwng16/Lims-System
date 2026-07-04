@@ -20,7 +20,11 @@ export async function resolveMethodActor(): Promise<MethodActor> {
 
 function parseInput(formData: FormData): MethodInput | { parseError: string } {
   try {
-    const steps = JSON.parse(String(formData.get("stepsJson") ?? "[]")) as { id: string; name: string }[];
+    const steps = JSON.parse(String(formData.get("stepsJson") ?? "[]")) as {
+      id: string;
+      name: string;
+      requiredEquipmentTypes?: unknown[];
+    }[];
     const analytes = JSON.parse(String(formData.get("analytesJson") ?? "[]")) as MethodAnalyte[];
     return {
       name: String(formData.get("name") ?? ""),
@@ -29,7 +33,11 @@ function parseInput(formData: FormData): MethodInput | { parseError: string } {
       description: String(formData.get("description") ?? ""),
       accredited: formData.get("accredited") === "on",
       maxSamplesPerBatch: Number(formData.get("maxSamplesPerBatch")),
-      steps: steps.map((s) => ({ id: s.id, name: s.name })),
+      steps: steps.map((s) => ({
+        id: s.id,
+        name: s.name,
+        requiredEquipmentTypes: (s.requiredEquipmentTypes ?? []).map(String),
+      })),
       analytes: analytes.map((a) => ({
         id: a.id,
         name: a.name,

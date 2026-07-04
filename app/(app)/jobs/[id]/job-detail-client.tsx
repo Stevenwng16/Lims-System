@@ -50,6 +50,14 @@ const initialState: JobFormState = {};
 export type HistoryEvent = { when: string; who: string; action: string };
 type TypeOption = { id: string; name: string };
 type MethodOption = { id: string; label: string };
+type BatchRow = {
+  id: string;
+  methodLabel: string;
+  methodVersion: number;
+  status: "open" | "awaiting-review" | "completed" | "voided";
+  statusLabel: string;
+  containedSampleIds: string[];
+};
 
 const JOB_STATUS: Record<JobStatus, { label: string; dot: string }> = {
   "not-started": { label: "Not started", dot: "⚪" },
@@ -433,9 +441,11 @@ export function JobDetail({
   history,
   sampleTypes,
   labMethods,
+  batches,
 }: {
   job: JobView;
   jobLabel: string;
+  batches: BatchRow[];
   labName: string;
   typeNames: Record<string, string>;
   methodNames: Record<string, string>;
@@ -640,12 +650,44 @@ export function JobDetail({
           )}
         </TabsContent>
 
-        {/* Batches (AC 10) — design hook, populated in epic D. */}
+        {/* Batches (AC 10) — real since US-D1/D3. */}
         <TabsContent value="batches">
-          <div className="rounded-lg border bg-card p-8 text-center text-sm text-muted-foreground">
-            No batches yet. Batches that contain this {jobLabel.toLowerCase()}&apos;s samples will
-            appear here once batch processing (epic D) is built.
-          </div>
+          {batches.length === 0 ? (
+            <div className="rounded-lg border bg-card p-8 text-center text-sm text-muted-foreground">
+              No batches contain this {jobLabel.toLowerCase()}&apos;s samples yet.
+            </div>
+          ) : (
+            <div className="overflow-x-auto rounded-lg border bg-card">
+              <Table>
+                <TableHeader>
+                  <TableRow>
+                    <TableHead>Batch</TableHead>
+                    <TableHead>Method</TableHead>
+                    <TableHead>Status</TableHead>
+                    <TableHead>Samples from this {jobLabel.toLowerCase()}</TableHead>
+                  </TableRow>
+                </TableHeader>
+                <TableBody>
+                  {batches.map((b) => (
+                    <TableRow key={b.id}>
+                      <TableCell>
+                        <Link href={`/batches/${b.id}`} className="font-mono text-sm text-primary underline-offset-4 hover:underline">
+                          {b.id}
+                        </Link>
+                      </TableCell>
+                      <TableCell className="text-sm">
+                        {b.methodLabel} <span className="text-xs text-muted-foreground">v{b.methodVersion}</span>
+                      </TableCell>
+                      <TableCell className="text-sm">
+                        {b.status === "voided" ? <Badge variant="secondary">Voided</Badge> : b.statusLabel}
+                      </TableCell>
+                      <TableCell className="font-mono text-xs">{b.containedSampleIds.join(", ")}</TableCell>
+                    </TableRow>
+                  ))}
+                </TableBody>
+              </Table>
+            </div>
+          )}
         </TabsContent>
 
         {/* History (AC 11) — a view on the audit log, filtered to this job. */}

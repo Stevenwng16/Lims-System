@@ -72,6 +72,25 @@ function validateInput(
 
   if (input.steps.length < 1) return "A method needs at least one process step.";
   if (input.steps.some((s) => !s.name.trim())) return "Process steps cannot be empty.";
+  // Required equipment types (US-B1 AC 8, editable since US-D3 — they drive
+  // step-completion gating): every id must be an equipment type of this
+  // organisation; NEW references must be to ACTIVE types, while a type a step
+  // already holds stays valid (grandfathering, as everywhere).
+  const priorSteps = excludeId
+    ? currentMethodVersion(mockDb.methods.get(excludeId)!).steps
+    : [];
+  for (const s of input.steps) {
+    const held = new Set(priorSteps.find((p) => p.id === s.id)?.requiredEquipmentTypes ?? []);
+    for (const typeId of s.requiredEquipmentTypes) {
+      const type = mockDb.equipmentTypes.get(typeId);
+      if (!type || type.orgId !== actor.orgId) {
+        return `Step "${s.name}": unknown equipment type in the requirement.`;
+      }
+      if (type.status !== "active" && !held.has(typeId)) {
+        return `Step "${s.name}": the equipment type "${type.name}" is inactive — pick an active type.`;
+      }
+    }
+  }
   if (input.analytes.length < 1) return "A method needs at least one analyte.";
   for (const analyte of input.analytes) {
     if (!analyte.name.trim()) return "Analyte names cannot be empty.";
@@ -122,13 +141,14 @@ function buildVersion(
     accredited: input.accredited,
     maxSamplesPerBatch: input.maxSamplesPerBatch,
     steps: input.steps.map((s) => {
-      // Preserve the design hooks (AC 4/8) across edits for surviving steps.
+      // requiredEquipmentTypes is EDITED here since US-D3 (validated above);
+      // the validation-rule hook stays preserved for surviving steps (AC 4).
       const prevStep = previous?.steps.find((p) => p.id === s.id);
       return {
         id: s.id,
         name: s.name.trim(),
         // Copy, never share, so old versions stay frozen (AC 9 / invariant 3).
-        requiredEquipmentTypes: [...(prevStep?.requiredEquipmentTypes ?? [])],
+        requiredEquipmentTypes: [...new Set(s.requiredEquipmentTypes)],
         inputValidationRule: prevStep?.inputValidationRule ?? null,
       };
     }),

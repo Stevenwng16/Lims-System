@@ -1,5 +1,5 @@
 import { notFound } from "next/navigation";
-import { batchApi, canComposeBatch } from "@/lib/batches";
+import { batchApi, canComposeBatch, canWorkBatch } from "@/lib/batches";
 import { getOrgSettings } from "@/lib/mock-db";
 import {
   Breadcrumb,
@@ -28,6 +28,12 @@ export default async function BatchDetailPage({ params }: { params: Promise<{ id
   const canEdit =
     detail.compositionOpen &&
     canComposeBatch(actor, detail.record.labId, detail.record.methodId) === null;
+  // US-D3: work = Admin / Lab manager / cleared Analyst; set-back & void =
+  // Admin / Lab manager only. Presentation flags — the server re-enforces.
+  const canWork = canWorkBatch(actor, detail.record) === null;
+  const canManage =
+    (actor.role === "admin" || actor.role === "lab-manager") &&
+    (actor.role === "admin" || actor.isSupport || actor.labs.includes(detail.labName));
   const downloadable = (await batchApi.workingCopyFile(actor, id)) !== null;
   const jobLabel = getOrgSettings(actor.orgId).jobLabel;
 
@@ -47,6 +53,8 @@ export default async function BatchDetailPage({ params }: { params: Promise<{ id
       <BatchDetailClient
         detail={detail}
         canEdit={canEdit}
+        canWork={canWork}
+        canManage={canManage}
         downloadable={downloadable}
         jobLabel={jobLabel}
       />
