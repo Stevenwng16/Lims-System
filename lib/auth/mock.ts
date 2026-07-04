@@ -126,6 +126,12 @@ export const mockAuthApi: AuthApi = {
     // policy. The real backend resolves the policy from the token's account.
     return { minLength: securityPolicy(undefined).minPasswordLength };
   },
+
+  async validateSession(sessionUser) {
+    const record = mockDb.users.get(sessionUser.email);
+    if (!record || record.status === "inactive" || record.locked) return null;
+    return { user: toSessionUser(record), labs: record.labs };
+  },
 };
 
 export { DEMO_PASSWORD };

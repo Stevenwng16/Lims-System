@@ -31,6 +31,12 @@ export type MfaResult =
 
 export type ResetResult = { status: "success" } | { status: "invalid_token" };
 
+// Result of the per-request live re-validation (US-A6 AC 6 / audit finding 4):
+// the CURRENT account state, never the cookie snapshot. `labs` is null when
+// the backend does not manage lab assignments (the Supabase schema has no
+// labs yet) — the caller then falls back to the domain layer's lab data.
+export type LiveSession = { user: SessionUser; labs: string[] | null };
+
 export interface AuthApi {
   login(email: string, password: string): Promise<LoginResult>;
   verifyMfa(mfaToken: string, code: string): Promise<MfaResult>;
@@ -39,4 +45,10 @@ export interface AuthApi {
   resetPassword(token: string, newPassword: string): Promise<ResetResult>;
   /** Org password policy shown/enforced client-side; server re-validates (AC 4). */
   passwordPolicy(): Promise<{ minLength: number }>;
+  /**
+   * Re-validate a session's account against the LIVE store on every request:
+   * a demoted / deactivated / locked user takes effect immediately, not only
+   * at next login (finding 4). Returns null when the session must die.
+   */
+  validateSession(sessionUser: SessionUser): Promise<LiveSession | null>;
 }

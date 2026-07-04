@@ -4,6 +4,7 @@ import { revalidatePath } from "next/cache";
 import { cookies } from "next/headers";
 import { redirect } from "next/navigation";
 import { platformApi } from "@/lib/platform";
+import { authApi } from "@/lib/auth";
 import { decodeSession, SESSION_COOKIE } from "@/lib/auth/session";
 import { getOrgIdByName, mockDb } from "@/lib/mock-db";
 
@@ -20,12 +21,13 @@ export async function requireOrgAdmin(): Promise<string> {
   const cookieStore = await cookies();
   const session = decodeSession(cookieStore.get(SESSION_COOKIE)?.value);
   if (!session) redirect("/login");
-  // Live re-validation — a demoted/deactivated admin cannot manage grants.
-  const record = mockDb.users.get(session.user.email);
-  if (!record || record.role !== "admin" || record.status === "inactive" || record.locked) {
+  // Live re-validation via the active auth backend — a demoted/deactivated
+  // admin cannot manage grants.
+  const live = await authApi.validateSession(session.user);
+  if (!live || live.user.role !== "admin") {
     redirect("/");
   }
-  const orgId = getOrgIdByName(session.user.organisation);
+  const orgId = getOrgIdByName(live.user.organisation);
   // A suspended organisation's admin cannot manage grants either (US-A2 AC 6;
   // Fable re-review findings 2/22) — same gate as resolveOrgContext.
   if (!orgId || mockDb.organisations.get(orgId)?.status !== "active") {

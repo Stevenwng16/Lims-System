@@ -4,8 +4,8 @@ import { revalidatePath } from "next/cache";
 import { cookies } from "next/headers";
 import { redirect } from "next/navigation";
 import { platformApi } from "@/lib/platform";
+import { authApi } from "@/lib/auth";
 import { decodeSession, SESSION_COOKIE } from "@/lib/auth/session";
-import { mockDb } from "@/lib/mock-db";
 import {
   decodeSupportSession,
   encodeSupportSession,
@@ -21,8 +21,8 @@ async function requirePlatformAdmin() {
   // real server-side enforcement (invariant 4). Live-revalidated against the
   // store, never the cookie snapshot alone (Fable re-review finding 23).
   if (session?.user.role !== "platform-admin") redirect("/");
-  const record = mockDb.users.get(session.user.email);
-  if (!record || record.role !== "platform-admin" || record.status === "inactive" || record.locked) {
+  const live = await authApi.validateSession(session.user);
+  if (!live || live.user.role !== "platform-admin") {
     redirect("/session-expired");
   }
 }

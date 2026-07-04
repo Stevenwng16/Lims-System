@@ -3,6 +3,7 @@
 import { cookies } from "next/headers";
 import { redirect } from "next/navigation";
 import { authApi } from "@/lib/auth";
+import { createSupabaseServerClient } from "@/lib/supabase/server";
 import { encodeSession, SESSION_COOKIE, sessionCookieOptions } from "@/lib/auth/session";
 import { decodeSupportSession, SUPPORT_COOKIE } from "@/lib/platform/support-session";
 import { platformApi } from "@/lib/platform";
@@ -108,5 +109,11 @@ export async function logoutAction(): Promise<never> {
   await clearSupportCookie();
   const cookieStore = await cookies();
   cookieStore.delete(SESSION_COOKIE);
+  // Also revoke the Supabase session when the real backend is active, so
+  // logout kills the token server-side, not just the app cookie.
+  if (process.env.NEXT_PUBLIC_SUPABASE_URL) {
+    const supabase = await createSupabaseServerClient();
+    await supabase.auth.signOut();
+  }
   redirect("/login");
 }
