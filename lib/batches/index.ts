@@ -8,5 +8,12 @@ export type * from "./types";
 // The derived per-(sample × method) progress model (US-D1 AC 4, decision
 // 3 Jul 2026): status is computed from batch membership, never stored.
 export { sampleMethodProgress, sampleStatus } from "./progress";
-export { batchesForJobSamples, canComposeBatch, canWorkBatch, resultDisplay } from "./mock";
+export {
+  assignableUsersForBatch,
+  batchesForJobSamples,
+  canComposeBatch,
+  canWorkBatch,
+  resultDisplay,
+  stepNameOptionsForLab,
+} from "./mock";
 export { parseNumericInput } from "./parse";

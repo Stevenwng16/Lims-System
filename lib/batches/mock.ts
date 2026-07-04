@@ -3,10 +3,14 @@ import {
   currentMethodVersion,
   getOrgSettings,
   mockDb,
+  type ImportCellOutcome,
+  type ImportRowOutcome,
   type MethodStep,
   type MethodVersion,
   type MockBatch,
   type MockBatchEvent,
+  type MockImportConfig,
+  type MockImportEvent,
   type MockJob,
   type MockMeasurementRecord,
   type MockMethod,
@@ -20,6 +24,7 @@ import { sampleCanBatch } from "@/lib/jobs/types";
 import { qcMaterialsForMethod } from "@/lib/qc";
 import { openBatchOfMethodContaining, sampleMethodProgress } from "./progress";
 import { parseNumericInput } from "./parse";
+import { parseCsv, parseImportCell, type ParsedTable } from "./import-parse";
 import type {
   BatchActionResult,
   BatchActor,
@@ -31,6 +36,10 @@ import type {
   BulkPreviewCell,
   EligibleSample,
   EquipmentOption,
+  ImportConfigInput,
+  ImportPreview,
+  ImportPreviewRow,
+  ImportResolution,
   MethodBatchOptions,
   ResultTarget,
   ResultValueInput,
@@ -104,6 +113,28 @@ export function canWorkBatch(actor: BatchActor, batch: MockBatch): string | null
   return clearances.includes(batch.methodId)
     ? null
     : "You are not cleared for this batch's method.";
+}
+
+function userName(email: string | null): string | null {
+  if (!email) return null;
+  return mockDb.users.get(email)?.name ?? email;
+}
+
+/** US-D2 AC 2: deadline passed and the batch not finished — a flag, never a
+ * separate status (calendar-day comparison, like everywhere). */
+function isOverdue(batch: MockBatch, deadline: string | null): boolean {
+  if (!deadline) return false;
+  if (batch.status === "completed" || batch.status === "voided") return false;
+  return deadline < new Date().toISOString().slice(0, 10);
+}
+
+/** A BatchActor for an org member, for checking SOMEONE ELSE's right to work
+ * a batch (US-D2 AC 8). null = not an assignable org user. */
+function actorForOrgUser(orgId: string, email: string): BatchActor | null {
+  const user = mockDb.users.get(email);
+  if (!user || user.orgId !== orgId || user.status !== "active") return null;
+  if (user.role === "platform-admin") return null;
+  return { email: user.email, role: user.role, labs: user.labs, orgId, isSupport: false };
 }
 
 function findSample(orgId: string, sampleId: string): { job: MockJob; sample: MockSample } | null {
@@ -455,14 +486,24 @@ export const mockBatchApi: BatchApi = {
       .map((b) => {
         const method = mockDb.methods.get(b.methodId);
         const pinned = method ? methodVersionByNumber(method, b.methodVersion) : null;
+        const deadline = batchDeadline(b);
+        const active = b.status === "open" || b.status === "awaiting-review";
         return {
           id: b.id,
+          methodId: b.methodId,
           methodLabel: pinned ? methodLabel(pinned) : b.methodId,
           methodVersion: b.methodVersion,
           stepName: pinned?.steps[b.currentStepIndex]?.name ?? `Step ${b.currentStepIndex + 1}`,
           status: b.status,
           statusLabel: pinned ? statusLabelFor(b, pinned) : b.status,
-          deadline: batchDeadline(b),
+          deadline,
+          overdue: isOverdue(b, deadline),
+          assignee: b.assignee,
+          assigneeName: userName(b.assignee),
+          // US-D2 AC 6: claimable = unassigned, unfinished, and THIS actor may
+          // work on it (per-batch: clearance depends on the method).
+          canClaim: active && b.assignee === null && canWorkBatch(actor, b) === null,
+          mine: b.assignee === actor.email,
           sampleCount: b.sampleIds.length,
           qcPositions: qcPositions(b),
           maxPositions: pinned?.maxSamplesPerBatch ?? 0,
@@ -471,7 +512,13 @@ export const mockBatchApi: BatchApi = {
           createdBy: b.createdBy,
         };
       })
-      .sort((a, b) => b.createdAt.localeCompare(a.createdAt));
+      // US-D2 AC 1: deadline ascending (overdue naturally on top), batches
+      // without a deadline last; creation date as the tiebreak.
+      .sort(
+        (a, b) =>
+          (a.deadline ?? "9999-99-99").localeCompare(b.deadline ?? "9999-99-99") ||
+          a.createdAt.localeCompare(b.createdAt),
+      );
   },
 
   async getBatch(actor, batchId): Promise<BatchDetail | null> {
@@ -523,6 +570,8 @@ export const mockBatchApi: BatchApi = {
           )
         : [],
       qcOptions: compositionOpen ? qcOptionsFor(actor.orgId, batch.labId, pinned) : [],
+      assignee: batch.assignee,
+      assigneeName: userName(batch.assignee),
       statusLabel: statusLabelFor(batch, pinned),
       deadline: batchDeadline(batch),
       steps: buildStepsRail(batch, pinned),
@@ -604,11 +653,13 @@ export const mockBatchApi: BatchApi = {
       status: "open",
       currentStepIndex: 0, // AC 9: the batch enters the method's first step
       compositionLatched: false, // AC 10: flips ONE WAY at first advance/work (US-D3/D4)
+      assignee: null, // US-D2: born into the open pool
       sampleIds: validated.sampleIds,
       qc: validated.qc,
       workingCopy: null,
       worksheets: [], // US-D4 AC 9 versions; gates the final step (US-D3 AC 5)
       results: [], // ADR-2 measurement records (US-D4) — append-only
+      imports: [], // US-D5 import events — append-only
       reagentLotIds: [], // AC 11 hook
       events: [],
       createdAt: new Date().toISOString(),
@@ -997,6 +1048,7 @@ export const mockBatchApi: BatchApi = {
       validated.value,
       "manual",
       null,
+      null,
       existing,
       existing ? reason : null,
       rowLabelFor(batch, target),
@@ -1029,7 +1081,7 @@ export const mockBatchApi: BatchApi = {
       const validated = validateResultInput(batch.orgId, input);
       if ("error" in validated) continue;
       const analyteName = pinned.analytes.find((a) => a.id === cell.analyteId)?.name ?? cell.analyteId;
-      appendRecord(batch, actor, cell.target, cell.analyteId, validated.value, "manual", null, null, null, cell.rowLabel, analyteName);
+      appendRecord(batch, actor, cell.target, cell.analyteId, validated.value, "manual", null, null, null, null, cell.rowLabel, analyteName);
       written += 1;
     }
     if (written === 0) return { status: "error", message: "No accepted cells to write — fix the rejected ones and try again." };
@@ -1076,6 +1128,7 @@ export const mockBatchApi: BatchApi = {
         parsed.worksheetVersion,
         null,
         null,
+        null,
         cell.rowLabel,
         analyteName,
       );
@@ -1086,7 +1139,722 @@ export const mockBatchApi: BatchApi = {
     }
     return { status: "success", batchId };
   },
+
+  // ---- US-D2: the coordination layer --------------------------------------
+
+  async claimBatch(actor, batchId): Promise<BatchActionResult> {
+    const batch = mockDb.batches.get(batchKey(actor.orgId, batchId));
+    if (!batch || batch.orgId !== actor.orgId) return { status: "error", message: "Unknown batch." };
+    const denied = canWorkBatch(actor, batch);
+    if (denied) return { status: "error", message: denied };
+    if (batch.status === "completed" || batch.status === "voided") {
+      return { status: "error", message: "A finished batch is not claimed — it is a closed record." };
+    }
+    if (batch.assignee !== null) {
+      return {
+        status: "error",
+        message: `Already assigned to ${userName(batch.assignee)} — you can still work on it (open pool), or ask a manager to reassign.`,
+      };
+    }
+    batch.assignee = actor.email;
+    addEvent(batch, actor, "assignment-changed", `Claimed by ${userName(actor.email)}`);
+    return { status: "success", batchId };
+  },
+
+  async releaseClaim(actor, batchId): Promise<BatchActionResult> {
+    const batch = mockDb.batches.get(batchKey(actor.orgId, batchId));
+    if (!batch || batch.orgId !== actor.orgId) return { status: "error", message: "Unknown batch." };
+    if (batch.assignee !== actor.email) {
+      return { status: "error", message: "You can only release your own claim — managers reassign via Assign." };
+    }
+    batch.assignee = null;
+    addEvent(batch, actor, "assignment-changed", `Claim released by ${userName(actor.email)} — back in the open pool`);
+    return { status: "success", batchId };
+  },
+
+  async assignBatch(actor, batchId, assigneeEmail): Promise<BatchActionResult> {
+    const batch = mockDb.batches.get(batchKey(actor.orgId, batchId));
+    if (!batch || batch.orgId !== actor.orgId) return { status: "error", message: "Unknown batch." };
+    const denied = canManageBatch(actor, batch.labId); // AC 8: Admin / Lab manager only
+    if (denied) return { status: "error", message: denied };
+    if (batch.status === "completed" || batch.status === "voided") {
+      return { status: "error", message: "A finished batch is not assigned — it is a closed record." };
+    }
+
+    if (assigneeEmail === null) {
+      if (batch.assignee === null) return { status: "success", batchId };
+      const previous = userName(batch.assignee);
+      batch.assignee = null;
+      addEvent(batch, actor, "assignment-changed", `Unassigned (was ${previous})`);
+      return { status: "success", batchId };
+    }
+
+    // AC 8: the target must be ALLOWED to work on this batch — same US-D3
+    // rule, evaluated for the target user against the live store.
+    const targetActor = actorForOrgUser(actor.orgId, assigneeEmail);
+    if (!targetActor) return { status: "error", message: "Unknown or inactive user." };
+    const targetDenied = canWorkBatch(targetActor, batch);
+    if (targetDenied) {
+      return {
+        status: "error",
+        message: `${userName(assigneeEmail)} cannot be assigned: ${targetDenied}`,
+      };
+    }
+    if (batch.assignee === assigneeEmail) return { status: "success", batchId };
+    const previous = batch.assignee ? ` (was ${userName(batch.assignee)})` : "";
+    batch.assignee = assigneeEmail;
+    addEvent(batch, actor, "assignment-changed", `Assigned to ${userName(assigneeEmail)}${previous}`);
+    return { status: "success", batchId };
+  },
+
+  // ---- US-D5: instrument import --------------------------------------------
+
+  async listImportConfigs(actor, labId): Promise<MockImportConfig[]> {
+    if (!canSeeLab(actor, labId)) return [];
+    return [...mockDb.importConfigs.values()]
+      .filter((c) => c.orgId === actor.orgId && c.labId === labId)
+      .sort((a, b) => a.name.localeCompare(b.name));
+  },
+
+  async saveImportConfig(actor, configId, input): Promise<BatchActionResult> {
+    const denied = canManageConfigs(actor, input.labId);
+    if (denied) return { status: "error", message: denied };
+    const error = validateConfigInput(actor, input);
+    if (error) return { status: "error", message: error };
+
+    const normalized = {
+      name: input.name.trim(),
+      labId: input.labId,
+      fileType: input.fileType,
+      orientation: input.orientation,
+      idColumn: input.idColumn.trim(),
+      columns: input.orientation === "wide"
+        ? input.columns.map((c) => ({
+            header: c.header.trim(),
+            analyteName: c.analyteName.trim(),
+            unit: c.unit === null ? null : c.unit.trim(),
+          }))
+        : [],
+      analyteColumn: input.orientation === "long" ? input.analyteColumn.trim() : "",
+      valueColumn: input.orientation === "long" ? input.valueColumn.trim() : "",
+      longUnits: input.orientation === "long"
+        ? input.longUnits.map((u) => ({
+            analyteName: u.analyteName.trim(),
+            unit: u.unit === null ? null : u.unit.trim(),
+          }))
+        : [],
+      decimalSeparator: input.decimalSeparator,
+      csvDelimiter: input.csvDelimiter,
+    };
+
+    if (configId === null) {
+      const id = `imp-${crypto.randomUUID()}`;
+      mockDb.importConfigs.set(id, { id, orgId: actor.orgId, status: "active", ...normalized });
+      return { status: "success" };
+    }
+    const config = mockDb.importConfigs.get(configId);
+    if (!config || config.orgId !== actor.orgId) return { status: "error", message: "Unknown configuration." };
+    const denied2 = canManageConfigs(actor, config.labId);
+    if (denied2) return { status: "error", message: denied2 };
+    // Config changes are audited with before/after by the real backend
+    // (invariant 1); past imports stay explainable regardless — each event
+    // froze the mapping it applied (decision 4 Jul 2026).
+    Object.assign(config, normalized);
+    return { status: "success" };
+  },
+
+  async setImportConfigStatus(actor, configId, status, reason): Promise<BatchActionResult> {
+    const config = mockDb.importConfigs.get(configId);
+    if (!config || config.orgId !== actor.orgId) return { status: "error", message: "Unknown configuration." };
+    const denied = canManageConfigs(actor, config.labId);
+    if (denied) return { status: "error", message: denied };
+    if (config.status === status) return { status: "success" };
+    if (!reason.trim()) {
+      return { status: "error", message: "A reason is required to change the configuration's status." };
+    }
+    // Deactivate, never delete (AC 1).
+    config.status = status;
+    config.statusReason = reason.trim();
+    return { status: "success" };
+  },
+
+  async previewImport(actor, batchId, configId, file) {
+    const loaded = loadForEntry(actor, batchId); // same window as manual entry (AC 2)
+    if ("error" in loaded) return { status: "error", message: loaded.error };
+    const { batch, pinned } = loaded;
+    const config = mockDb.importConfigs.get(configId);
+    if (!config || config.orgId !== actor.orgId || config.labId !== batch.labId) {
+      return { status: "error", message: "Unknown import configuration for this lab." };
+    }
+    if (config.status !== "active") {
+      return { status: "error", message: "This import configuration is deactivated." };
+    }
+    if (file.bytes.length === 0) return { status: "error", message: "The file is empty." };
+    if (file.bytes.length > 5 * 1024 * 1024) {
+      return { status: "error", message: "Import files are limited to 5 MB in the mock." };
+    }
+
+    const table = await readImportTable(config, file.fileName, file.bytes);
+    if ("error" in table) return { status: "error", message: table.error };
+    const computed = computeImport(batch, pinned, config, table);
+    if ("error" in computed) return { status: "error", message: computed.error };
+
+    // Decorate with conflicts against the CURRENT grid (AC 7).
+    const current = currentByCell(batch);
+    const rows: ImportPreviewRow[] = computed.rows.map((row) => ({
+      rowNumber: row.rowNumber,
+      idCell: row.idCell,
+      match: row.match,
+      cells: row.cells.map((cell) => {
+        if (cell.error) return { analyteName: cell.analyteName, raw: cell.raw, verdict: { kind: "rejected", message: cell.error } };
+        if (!cell.parsed) return { analyteName: cell.analyteName, raw: cell.raw, verdict: { kind: "rejected", message: "Not evaluated." } };
+        const display = resultDisplay(cell.parsed);
+        const target: ResultTarget | null =
+          row.match.kind === "sample"
+            ? { targetType: "sample", targetId: row.match.id }
+            : row.match.kind === "qc"
+              ? { targetType: "qc", targetId: row.match.materialId }
+              : null;
+        const existing = target && cell.analyteId ? current.get(cellKey(target, cell.analyteId)) : undefined;
+        if (existing) {
+          return {
+            analyteName: cell.analyteName,
+            raw: cell.raw,
+            verdict: { kind: "conflict", display, existing: resultDisplay(existing.value) },
+          };
+        }
+        return { analyteName: cell.analyteName, raw: cell.raw, verdict: { kind: "ok", display } };
+      }),
+    }));
+
+    // Stage the exact bytes for confirm (one-use token; 30 min TTL).
+    for (const [token, staged] of mockDb.pendingImports) {
+      if (Date.now() - staged.createdAt > 30 * 60_000) mockDb.pendingImports.delete(token);
+    }
+    const token = `imp-tok-${crypto.randomUUID()}`;
+    mockDb.pendingImports.set(token, {
+      orgId: actor.orgId,
+      actorEmail: actor.email,
+      batchId,
+      configId,
+      fileName: file.fileName,
+      bytes: new Uint8Array(file.bytes),
+      createdAt: Date.now(),
+    });
+
+    return {
+      status: "success",
+      preview: {
+        token,
+        configId,
+        configName: config.name,
+        fileName: file.fileName,
+        rows,
+        notices: computed.notices,
+        unitErrors: computed.unitErrors,
+        conflictCount: rows.reduce(
+          (n, r) => n + r.cells.filter((c) => c.verdict.kind === "conflict").length,
+          0,
+        ),
+        unresolvedCount: rows.filter((r) => r.match.kind === "unknown" || r.match.kind === "out-of-batch").length,
+      },
+    };
+  },
+
+  async confirmImport(actor, batchId, token, resolutions, replaceCells, replaceAll, supersedeReason): Promise<BatchActionResult> {
+    const loaded = loadForEntry(actor, batchId);
+    if ("error" in loaded) return { status: "error", message: loaded.error };
+    const { batch, pinned } = loaded;
+
+    const staged = mockDb.pendingImports.get(token);
+    if (!staged || staged.orgId !== actor.orgId || staged.batchId !== batchId || staged.actorEmail !== actor.email) {
+      return { status: "error", message: "The preview has expired — run the preview again." };
+    }
+    if (Date.now() - staged.createdAt > 30 * 60_000) {
+      mockDb.pendingImports.delete(token);
+      return { status: "error", message: "The preview has expired — run the preview again." };
+    }
+    const config = mockDb.importConfigs.get(staged.configId);
+    if (!config) return { status: "error", message: "Unknown import configuration." };
+
+    // Deterministic re-run on the SAME staged bytes — the stored event is
+    // provably what was previewed and confirmed.
+    const table = await readImportTable(config, staged.fileName, staged.bytes);
+    if ("error" in table) return { status: "error", message: table.error };
+    const computed = computeImport(batch, pinned, config, table);
+    if ("error" in computed) return { status: "error", message: computed.error };
+
+    const resolutionByRow = new Map(resolutions.map((r) => [r.rowNumber, r] as const));
+    const replaceSet = new Set(replaceCells.map((c) => `${c.rowNumber}:${c.analyteName.toLowerCase()}`));
+    const current = currentByCell(batch);
+
+    // AC 4: every unmatched row must be resolved before anything is written.
+    type PlannedWrite = {
+      rowNumber: number;
+      target: ResultTarget;
+      analyteId: string;
+      analyteName: string;
+      value: ResultValue;
+      raw: string;
+      existing: MockMeasurementRecord | null;
+      replace: boolean;
+    };
+    const writes: PlannedWrite[] = [];
+    const rowOutcomes: ImportRowOutcome[] = [];
+    let anyReplace = false;
+
+    for (const row of computed.rows) {
+      const resolution = resolutionByRow.get(row.rowNumber);
+      let target: ResultTarget | null = null;
+      let matchedLabel: string | null = null;
+      let skipped: string | null = null;
+
+      if (row.match.kind === "sample") {
+        target = { targetType: "sample", targetId: row.match.id };
+        matchedLabel = `sample:${row.match.id}`;
+      } else if (row.match.kind === "qc") {
+        target = { targetType: "qc", targetId: row.match.materialId };
+        matchedLabel = `qc:${row.match.materialId}`;
+      } else if (row.match.kind === "out-of-batch") {
+        // Only skippable (AC 4).
+        if (resolution?.action === "skip" && resolution.reason.trim()) {
+          skipped = resolution.reason.trim();
+        } else if (resolution?.action === "map") {
+          return { status: "error", message: `Row ${row.rowNumber} (${row.idCell}) belongs to a sample outside this batch — it can only be skipped.` };
+        } else {
+          return { status: "error", message: `Row ${row.rowNumber} (${row.idCell}) is unresolved — skip it with a reason.` };
+        }
+      } else {
+        // unknown: map or skip-with-reason (AC 4).
+        if (resolution?.action === "map") {
+          const targetOk =
+            (resolution.target.targetType === "sample" && batch.sampleIds.includes(resolution.target.targetId)) ||
+            (resolution.target.targetType === "qc" && batch.qc.some((e) => e.materialId === resolution.target.targetId));
+          if (!targetOk) {
+            return { status: "error", message: `Row ${row.rowNumber}: the mapped target is not in this batch.` };
+          }
+          target = resolution.target;
+          matchedLabel = `${resolution.target.targetType}:${resolution.target.targetId}`;
+        } else if (resolution?.action === "skip" && resolution.reason.trim()) {
+          skipped = resolution.reason.trim();
+        } else {
+          return { status: "error", message: `Row ${row.rowNumber} (${row.idCell || "empty ID"}) is unresolved — map it or skip it with a reason (confirm stays blocked).` };
+        }
+      }
+
+      const cellOutcomes: ImportCellOutcome[] = [];
+      if (target && !skipped) {
+        for (const cell of row.cells) {
+          if (cell.error || !cell.parsed || !cell.analyteId) {
+            cellOutcomes.push({ analyteName: cell.analyteName, raw: cell.raw, result: "rejected", reason: cell.error ?? "Not evaluated." });
+            continue;
+          }
+          const existing = current.get(cellKey(target, cell.analyteId)) ?? null;
+          const replace = existing !== null && (replaceAll || replaceSet.has(`${row.rowNumber}:${cell.analyteName.toLowerCase()}`));
+          if (existing && !replace) {
+            cellOutcomes.push({ analyteName: cell.analyteName, raw: cell.raw, result: "kept-existing", reason: "" });
+            continue; // AC 7 default: keep existing
+          }
+          if (existing && replace) anyReplace = true;
+          writes.push({
+            rowNumber: row.rowNumber,
+            target,
+            analyteId: cell.analyteId,
+            analyteName: cell.analyteName,
+            value: cell.parsed,
+            raw: cell.raw,
+            existing,
+            replace: existing !== null,
+          });
+          cellOutcomes.push({
+            analyteName: cell.analyteName,
+            raw: cell.raw,
+            result: existing ? "superseded-existing" : "imported",
+            reason: "",
+          });
+        }
+      } else {
+        for (const cell of row.cells) {
+          cellOutcomes.push({ analyteName: cell.analyteName, raw: cell.raw, result: "rejected", reason: skipped ? `Row skipped: ${skipped}` : (cell.error ?? "") });
+        }
+      }
+
+      rowOutcomes.push({
+        rowNumber: row.rowNumber,
+        idCell: row.idCell,
+        matched: matchedLabel,
+        outcome: skipped ? "skipped" : cellOutcomes.some((c) => c.result === "imported" || c.result === "superseded-existing") ? "imported" : "rejected",
+        reason: skipped ?? (cellOutcomes.every((c) => c.result === "rejected") ? (cellOutcomes[0]?.reason ?? "") : ""),
+        cells: cellOutcomes,
+      });
+    }
+
+    if (anyReplace && !supersedeReason.trim()) {
+      return { status: "error", message: "Replacing existing values requires a reason (recorded on each superseded value)." };
+    }
+    if (writes.length === 0) {
+      return { status: "error", message: "Nothing to import — every cell is rejected, skipped or kept as-is." };
+    }
+
+    // AC 8: the event — file, checksum, frozen mapping, row outcomes — is
+    // stored BEFORE any record is written.
+    const eventId = `impev-${crypto.randomUUID()}`;
+    const sha256 = createHash("sha256").update(staged.bytes).digest("hex");
+    const importEvent: MockImportEvent = {
+      id: eventId,
+      at: new Date().toISOString(),
+      by: actor.email,
+      file: {
+        id: `att-${eventId}`,
+        fileName: staged.fileName,
+        sizeBytes: staged.bytes.length,
+        sha256,
+        uploadedAt: new Date().toISOString(),
+        uploadedBy: actor.email,
+      },
+      configId: config.id,
+      configName: config.name,
+      configSnapshot: JSON.stringify(config),
+      supersedeReason: anyReplace ? supersedeReason.trim() : null,
+      rows: rowOutcomes,
+    };
+    mockDb.batchFiles.set(`${batch.orgId}:import:${eventId}`, new Uint8Array(staged.bytes));
+    batch.imports.push(importEvent);
+    const importedCount = writes.filter((w) => !w.replace).length;
+    const supersededCount = writes.filter((w) => w.replace).length;
+    addEvent(
+      batch,
+      actor,
+      "import-confirmed",
+      `Import "${config.name}" — ${staged.fileName} (sha256 ${sha256.slice(0, 16)}…): ${importedCount} imported, ${supersededCount} replaced, ${rowOutcomes.filter((r) => r.outcome === "skipped").length} row(s) skipped`,
+    );
+
+    // AC 9: records with origin `import`, referencing the event (per-record
+    // audit events ride appendRecord — AC 10).
+    for (const write of writes) {
+      appendRecord(
+        batch,
+        actor,
+        write.target,
+        write.analyteId,
+        write.value,
+        "import",
+        null,
+        eventId,
+        write.existing,
+        write.existing ? supersedeReason.trim() : null,
+        rowLabelFor(batch, write.target),
+        write.analyteName,
+      );
+    }
+    mockDb.pendingImports.delete(token); // one-use
+    return { status: "success", batchId };
+  },
 };
+
+// ---- US-D5: instrument import ----------------------------------------------
+
+function canManageConfigs(actor: BatchActor, labId: string): string | null {
+  if (actor.role !== "admin" && actor.role !== "lab-manager") {
+    return "Only Admins and Lab managers manage import configurations.";
+  }
+  if (actor.role === "admin" || actor.isSupport) return null;
+  return actor.labs.includes(labNameById(labId))
+    ? null
+    : "You can only manage import configurations in your own lab(s).";
+}
+
+function validateConfigInput(actor: BatchActor, input: ImportConfigInput): string | null {
+  if (!input.name.trim()) return "The configuration needs a name.";
+  const lab = mockDb.labs.get(input.labId);
+  if (!lab || lab.orgId !== actor.orgId) return "Choose the lab this configuration belongs to.";
+  if (input.fileType !== "csv" && input.fileType !== "excel") return "Choose the file type.";
+  if (input.orientation !== "wide" && input.orientation !== "long") return "Choose the orientation.";
+  if (input.decimalSeparator !== "comma" && input.decimalSeparator !== "point") {
+    return "Declare the decimal separator (ADR-4: declared, never auto-detected).";
+  }
+  if (!["comma", "semicolon", "tab"].includes(input.csvDelimiter)) return "Declare the CSV delimiter.";
+  if (!input.idColumn.trim()) return "Name the column that carries the sample/QC ID.";
+  if (input.orientation === "wide") {
+    if (input.columns.length < 1) return "Map at least one analyte column.";
+    const seen = new Set<string>();
+    for (const c of input.columns) {
+      if (!c.header.trim()) return "Every mapped column needs its file header.";
+      if (!c.analyteName.trim()) return "Every mapped column needs an analyte name.";
+      if (c.unit !== null && !c.unit.trim()) {
+        return `Column "${c.header}": enter a unit or mark it explicitly as "no unit".`;
+      }
+      const key = c.header.trim().toLowerCase();
+      if (seen.has(key)) return `Column "${c.header}" is mapped twice.`;
+      seen.add(key);
+    }
+  } else {
+    if (!input.analyteColumn.trim()) return "Name the analyte column (long orientation).";
+    if (!input.valueColumn.trim()) return "Name the value column (long orientation).";
+    const seen = new Set<string>();
+    for (const u of input.longUnits) {
+      if (!u.analyteName.trim()) return "Every unit row needs an analyte name.";
+      if (u.unit !== null && !u.unit.trim()) {
+        return `Analyte "${u.analyteName}": enter a unit or mark it explicitly as "no unit".`;
+      }
+      const key = u.analyteName.trim().toLowerCase();
+      if (seen.has(key)) return `Analyte "${u.analyteName}" has two unit declarations.`;
+      seen.add(key);
+    }
+  }
+  return null;
+}
+
+/** Read the file into a raw string table — CSV via our strict parser, Excel
+ * via exceljs extracting cell TEXT only (decision 4 Jul 2026: the library
+ * never interprets values; ADR-4 validation stays the only judge). */
+async function readImportTable(
+  config: MockImportConfig,
+  fileName: string,
+  bytes: Uint8Array,
+): Promise<ParsedTable | { error: string }> {
+  if (config.fileType === "csv") {
+    if (/\.xlsx?$/i.test(fileName)) {
+      return { error: "This configuration reads CSV, but the file looks like Excel — pick the matching configuration." };
+    }
+    return parseCsv(Buffer.from(bytes).toString("utf8"), config.csvDelimiter);
+  }
+  if (!/\.xlsx$/i.test(fileName)) {
+    return { error: "This configuration reads Excel (.xlsx) — pick the matching configuration for CSV files." };
+  }
+  try {
+    const ExcelJS = (await import("exceljs")).default;
+    const workbook = new ExcelJS.Workbook();
+    await workbook.xlsx.load(Buffer.from(bytes) as unknown as ArrayBuffer);
+    const sheet = workbook.worksheets[0];
+    if (!sheet) return { error: "The workbook contains no sheets." };
+    const rows: string[][] = [];
+    for (let r = 1; r <= sheet.rowCount; r++) {
+      const row = sheet.getRow(r);
+      const cells: string[] = [];
+      for (let c = 1; c <= sheet.columnCount; c++) {
+        cells.push(String(row.getCell(c).text ?? "").trim());
+      }
+      if (cells.some((cell) => cell !== "")) rows.push(cells);
+    }
+    if (rows.length < 2) return { error: "The sheet has no data rows under the header." };
+    const [header, ...data] = rows;
+    return { header, rows: data };
+  } catch {
+    return { error: "The Excel file could not be read — is it a valid .xlsx export?" };
+  }
+}
+
+type ComputedCell = {
+  analyteName: string;
+  analyteId: string | null;
+  raw: string;
+  parsed: ResultValue | null;
+  error: string | null; // rejection reason (unit mismatch, unparseable, duplicate)
+};
+
+type ComputedRow = {
+  rowNumber: number;
+  idCell: string;
+  match: ImportPreviewRow["match"];
+  cells: ComputedCell[];
+};
+
+/** The deterministic core shared by preview and confirm: file table + config
+ * + batch → matched rows with per-cell verdicts (AC 4/5/6). */
+function computeImport(
+  batch: MockBatch,
+  pinned: MethodVersion,
+  config: MockImportConfig,
+  table: ParsedTable,
+): { rows: ComputedRow[]; notices: string[]; unitErrors: string[] } | { error: string } {
+  const notices: string[] = [];
+  const unitErrors: string[] = [];
+  const headerIndex = new Map(table.header.map((h, i) => [h.trim().toLowerCase(), i] as const));
+  const col = (name: string) => headerIndex.get(name.trim().toLowerCase());
+
+  const idIdx = col(config.idColumn);
+  if (idIdx === undefined) {
+    return { error: `The ID column "${config.idColumn}" is not in the file header (${table.header.join(", ")}).` };
+  }
+
+  const unitMatches = (declared: string | null, methodUnit: string | null) =>
+    (declared?.trim().toLowerCase() || null) === (methodUnit?.trim().toLowerCase() || null);
+  const analyteByName = (name: string) =>
+    pinned.analytes.find((a) => a.name.trim().toLowerCase() === name.trim().toLowerCase()) ?? null;
+
+  // Column plan (wide) / unit plan (long) with the AC 6 unit guard.
+  type WidePlan = { header: string; index: number | undefined; analyteName: string; analyteId: string | null; unitError: string | null };
+  const widePlan: WidePlan[] = [];
+  if (config.orientation === "wide") {
+    for (const mapping of config.columns) {
+      const analyte = analyteByName(mapping.analyteName);
+      let unitError: string | null = null;
+      if (!analyte) {
+        notices.push(`Column "${mapping.header}" (${mapping.analyteName}) has no matching analyte on this method — ignored.`);
+      } else if (!unitMatches(mapping.unit, analyte.unit)) {
+        unitError = `Column "${mapping.header}": configured unit "${mapping.unit ?? "no unit"}" ≠ method unit "${analyte.unit ?? "no unit"}" — all its cells rejected (factor-1000 guard).`;
+        unitErrors.push(unitError);
+      }
+      const index = col(mapping.header);
+      if (index === undefined && analyte) {
+        notices.push(`Column "${mapping.header}" is not in the file header — its analyte stays empty.`);
+      }
+      widePlan.push({ header: mapping.header, index, analyteName: mapping.analyteName, analyteId: analyte?.id ?? null, unitError });
+    }
+  }
+  let longIdx: { analyte: number; value: number } | null = null;
+  const longUnitErrors = new Map<string, string>(); // analyteName(lc) → error
+  if (config.orientation === "long") {
+    const a = col(config.analyteColumn);
+    const v = col(config.valueColumn);
+    if (a === undefined || v === undefined) {
+      return { error: `The analyte/value columns ("${config.analyteColumn}", "${config.valueColumn}") are not both in the file header.` };
+    }
+    longIdx = { analyte: a, value: v };
+    for (const u of config.longUnits) {
+      const analyte = analyteByName(u.analyteName);
+      if (analyte && !unitMatches(u.unit, analyte.unit)) {
+        const message = `Analyte "${u.analyteName}": configured unit "${u.unit ?? "no unit"}" ≠ method unit "${analyte.unit ?? "no unit"}" — its cells rejected (factor-1000 guard).`;
+        longUnitErrors.set(u.analyteName.trim().toLowerCase(), message);
+        unitErrors.push(message);
+      }
+    }
+  }
+
+  // Row matching (AC 4).
+  const sampleById = new Map(batch.sampleIds.map((id) => [id.toLowerCase(), id] as const));
+  const qcByCode = new Map(
+    batch.qc.map((e) => {
+      const code = mockDb.qcMaterials.get(e.materialId)?.code ?? e.materialId;
+      return [code.toLowerCase(), { materialId: e.materialId, code }] as const;
+    }),
+  );
+  const matchRow = (idCell: string): ImportPreviewRow["match"] => {
+    const key = idCell.trim().toLowerCase();
+    const sample = sampleById.get(key);
+    if (sample) return { kind: "sample", id: sample };
+    const qc = qcByCode.get(key);
+    if (qc) return { kind: "qc", materialId: qc.materialId, code: qc.code };
+    // An ID that belongs to a sample OUTSIDE this batch is shown as such and
+    // can only be skipped (AC 4).
+    for (const job of mockDb.jobs.values()) {
+      if (job.orgId !== batch.orgId) continue;
+      const found = job.samples.find((s) => s.id.toLowerCase() === key);
+      if (found) return { kind: "out-of-batch", sampleId: found.id };
+    }
+    return { kind: "unknown" };
+  };
+
+  // Long orientation: group measurement rows per file row but evaluate each
+  // (row, analyte, value) as one cell.
+  const seenCellsInFile = new Set<string>(); // duplicate guard (decision 4 Jul 2026)
+  const unknownLongAnalytes = new Map<string, number>();
+  const rows: ComputedRow[] = table.rows.map((cells, i) => {
+    const idCell = (cells[idIdx] ?? "").trim();
+    const match = matchRow(idCell);
+    const target: ResultTarget | null =
+      match.kind === "sample"
+        ? { targetType: "sample", targetId: match.id }
+        : match.kind === "qc"
+          ? { targetType: "qc", targetId: match.materialId }
+          : null;
+
+    const computed: ComputedCell[] = [];
+    const evaluate = (analyteName: string, analyteId: string | null, raw: string, unitError: string | null) => {
+      if (raw.trim() === "") return; // empty cells simply stay empty
+      const cell: ComputedCell = { analyteName, analyteId, raw, parsed: null, error: null };
+      if (unitError) {
+        cell.error = unitError;
+      } else if (!analyteId) {
+        cell.error = "No matching analyte on this method — ignored.";
+      } else {
+        const parsed = parseImportCell(raw, config.decimalSeparator);
+        if (!parsed.ok) {
+          cell.error = parsed.message;
+        } else if (target) {
+          const dupKey = `${target.targetType}:${target.targetId}:${analyteId}`;
+          if (seenCellsInFile.has(dupKey)) {
+            cell.error = "Duplicate row for this entry — the first row was kept (QC position bookkeeping is post-MVP).";
+          } else {
+            seenCellsInFile.add(dupKey);
+            cell.parsed = parsed.value;
+          }
+        } else {
+          cell.parsed = parsed.value; // unmatched row: parse verdict still shown
+        }
+      }
+      computed.push(cell);
+    };
+
+    if (config.orientation === "wide") {
+      for (const plan of widePlan) {
+        if (plan.index === undefined) continue;
+        evaluate(plan.analyteName, plan.analyteId, (cells[plan.index] ?? "").trim(), plan.unitError);
+      }
+    } else if (longIdx) {
+      const analyteName = (cells[longIdx.analyte] ?? "").trim();
+      const raw = (cells[longIdx.value] ?? "").trim();
+      if (analyteName) {
+        const analyte = analyteByName(analyteName);
+        if (!analyte) {
+          unknownLongAnalytes.set(analyteName, (unknownLongAnalytes.get(analyteName) ?? 0) + 1);
+        }
+        evaluate(
+          analyteName,
+          analyte?.id ?? null,
+          raw,
+          longUnitErrors.get(analyteName.trim().toLowerCase()) ?? null,
+        );
+      }
+    }
+    return { rowNumber: i + 1, idCell, match, cells: computed };
+  });
+
+  for (const [name, count] of unknownLongAnalytes) {
+    notices.push(`Analyte "${name}" (${count} row(s)) is not on this method — ignored (instruments often measure more than the method reports).`);
+  }
+  // AC 4: all rows with one QC code attach to that entry; count vs quantity
+  // is a notice, never a block.
+  for (const entry of batch.qc) {
+    const code = mockDb.qcMaterials.get(entry.materialId)?.code ?? entry.materialId;
+    const rowCount = rows.filter((r) => r.match.kind === "qc" && r.match.materialId === entry.materialId).length;
+    if (rowCount > 0 && rowCount !== entry.quantity) {
+      notices.push(`${code}: ${rowCount} row(s) in the file vs quantity ×${entry.quantity} on the batch.`);
+    }
+  }
+  return { rows, notices, unitErrors };
+}
+
+/** US-D2 AC 4: the distinct step names across the lab's ACTIVE methods
+ * (current versions) — "what is waiting at Digestion". */
+export function stepNameOptionsForLab(orgId: string, labId: string): string[] {
+  const names = new Set<string>();
+  for (const method of mockDb.methods.values()) {
+    if (method.orgId !== orgId || method.status !== "active") continue;
+    const current = currentMethodVersion(method);
+    if (current.labId !== labId) continue;
+    for (const step of current.steps) names.add(step.name);
+  }
+  return [...names].sort((a, b) => a.localeCompare(b));
+}
+
+/** US-D2 AC 8: the org users a manager may assign this batch to — everyone
+ * allowed to work on it under the US-D3 rule. */
+export function assignableUsersForBatch(
+  orgId: string,
+  batchId: string,
+): { email: string; name: string }[] {
+  const batch = mockDb.batches.get(batchKey(orgId, batchId));
+  if (!batch) return [];
+  const out: { email: string; name: string }[] = [];
+  for (const user of mockDb.users.values()) {
+    const targetActor = actorForOrgUser(orgId, user.email);
+    if (!targetActor) continue;
+    if (canWorkBatch(targetActor, batch) === null) out.push({ email: user.email, name: user.name });
+  }
+  return out.sort((a, b) => a.name.localeCompare(b.name));
+}
 
 // ---- US-D4: the results grid (the first ADR-2 records) ---------------------
 
@@ -1200,6 +1968,7 @@ function appendRecord(
   value: ResultValue,
   origin: MockMeasurementRecord["origin"],
   worksheetVersion: number | null,
+  importEventId: string | null,
   supersedes: MockMeasurementRecord | null,
   supersedeReason: string | null,
   rowLabel: string,
@@ -1215,6 +1984,7 @@ function appendRecord(
     value,
     origin,
     worksheetVersion,
+    importEventId,
     enteredBy: actor.email,
     enteredAt: new Date().toISOString(),
     supersedes: supersedes?.id ?? null,

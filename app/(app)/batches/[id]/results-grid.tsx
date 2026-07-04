@@ -4,6 +4,7 @@ import { useEffect, useMemo, useState } from "react";
 import { useActionState } from "react";
 import type { BulkPreviewCell, GridCell, ResultsGrid } from "@/lib/batches";
 import type { MockMeasurementRecord, ResultValue } from "@/lib/mock-db";
+import { ImportDialog, type ImportConfigOption } from "./import-dialog";
 import {
   confirmPasteAction,
   confirmWorksheetAction,
@@ -453,16 +454,19 @@ type GridDialog =
   | { kind: "cell"; rowIndex: number; columnIndex: number }
   | { kind: "paste" }
   | { kind: "worksheet" }
+  | { kind: "import" }
   | null;
 
 export function ResultsGridSection({
   batchId,
   grid,
   canEnter,
+  importConfigs,
 }: {
   batchId: string;
   grid: ResultsGrid;
   canEnter: boolean;
+  importConfigs: ImportConfigOption[];
 }) {
   const [dialog, setDialog] = useState<GridDialog>(null);
   const close = () => setDialog(null);
@@ -478,6 +482,9 @@ export function ResultsGridSection({
         </CardTitle>
         {canEnter && grid.entryOpen && (
           <div className="flex gap-2">
+            <Button size="sm" variant="outline" onClick={() => setDialog({ kind: "import" })}>
+              Import file…
+            </Button>
             <Button size="sm" variant="outline" onClick={() => setDialog({ kind: "paste" })}>
               Paste block…
             </Button>
@@ -584,6 +591,9 @@ export function ResultsGridSection({
         )}
         {dialog?.kind === "paste" && <PasteDialog batchId={batchId} grid={grid} onDone={close} />}
         {dialog?.kind === "worksheet" && <WorksheetReadDialog batchId={batchId} grid={grid} onDone={close} />}
+        {dialog?.kind === "import" && (
+          <ImportDialog batchId={batchId} grid={grid} configs={importConfigs} onDone={close} />
+        )}
       </CardContent>
     </Card>
   );

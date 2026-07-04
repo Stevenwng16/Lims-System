@@ -8,6 +8,9 @@ import {
   type BatchCompositionInput,
   type BulkEntry,
   type BulkPreviewCell,
+  type ImportConfigInput,
+  type ImportPreview,
+  type ImportResolution,
   type ResultValueInput,
 } from "@/lib/batches";
 import { resolveOrgContext } from "@/lib/auth/context";
@@ -19,6 +22,11 @@ export type BulkFormState = {
   preview?: BulkPreviewCell[];
   notices?: string[];
   worksheetVersion?: number;
+};
+export type ImportFormState = {
+  error?: string;
+  success?: boolean;
+  preview?: ImportPreview;
 };
 
 // All org roles may view batches (lab-scoped); the mock API gates creating and
@@ -257,6 +265,172 @@ export async function confirmWorksheetAction(
   const batchId = String(formData.get("batchId") ?? "");
   // The server re-reads the worksheet itself — nothing client-supplied here.
   const result = await batchApi.confirmWorksheet(actor, batchId);
+  if (result.status === "error") return { error: result.message };
+  revalidatePath(`/batches/${batchId}`);
+  return { success: true };
+}
+
+export async function claimBatchAction(
+  _prev: BatchFormState,
+  formData: FormData,
+): Promise<BatchFormState> {
+  const actor = await resolveBatchActor();
+  const batchId = String(formData.get("batchId") ?? "");
+  const result = await batchApi.claimBatch(actor, batchId);
+  if (result.status === "error") return { error: result.message };
+  revalidatePath("/batches");
+  revalidatePath(`/batches/${batchId}`);
+  return { success: true };
+}
+
+export async function releaseClaimAction(
+  _prev: BatchFormState,
+  formData: FormData,
+): Promise<BatchFormState> {
+  const actor = await resolveBatchActor();
+  const batchId = String(formData.get("batchId") ?? "");
+  const result = await batchApi.releaseClaim(actor, batchId);
+  if (result.status === "error") return { error: result.message };
+  revalidatePath("/batches");
+  revalidatePath(`/batches/${batchId}`);
+  return { success: true };
+}
+
+export async function assignBatchAction(
+  _prev: BatchFormState,
+  formData: FormData,
+): Promise<BatchFormState> {
+  const actor = await resolveBatchActor();
+  const batchId = String(formData.get("batchId") ?? "");
+  const raw = String(formData.get("assignee") ?? "");
+  const result = await batchApi.assignBatch(actor, batchId, raw === "" ? null : raw);
+  if (result.status === "error") return { error: result.message };
+  revalidatePath("/batches");
+  revalidatePath(`/batches/${batchId}`);
+  return { success: true };
+}
+
+function parseImportConfigInput(formData: FormData): ImportConfigInput | null {
+  try {
+    const columns = JSON.parse(String(formData.get("columnsJson") ?? "[]")) as unknown[];
+    const longUnits = JSON.parse(String(formData.get("longUnitsJson") ?? "[]")) as unknown[];
+    return {
+      name: String(formData.get("name") ?? ""),
+      labId: String(formData.get("labId") ?? ""),
+      // Whitelisted server-side in the mock API.
+      fileType: String(formData.get("fileType") ?? "csv") as "csv" | "excel",
+      orientation: String(formData.get("orientation") ?? "wide") as "wide" | "long",
+      idColumn: String(formData.get("idColumn") ?? ""),
+      columns: columns.map((c) => {
+        const item = c as { header?: unknown; analyteName?: unknown; unit?: unknown };
+        return {
+          header: String(item.header ?? ""),
+          analyteName: String(item.analyteName ?? ""),
+          unit: item.unit === null ? null : String(item.unit ?? ""),
+        };
+      }),
+      analyteColumn: String(formData.get("analyteColumn") ?? ""),
+      valueColumn: String(formData.get("valueColumn") ?? ""),
+      longUnits: longUnits.map((u) => {
+        const item = u as { analyteName?: unknown; unit?: unknown };
+        return {
+          analyteName: String(item.analyteName ?? ""),
+          unit: item.unit === null ? null : String(item.unit ?? ""),
+        };
+      }),
+      decimalSeparator: String(formData.get("decimalSeparator") ?? "point") as "comma" | "point",
+      csvDelimiter: String(formData.get("csvDelimiter") ?? "semicolon") as "comma" | "semicolon" | "tab",
+    };
+  } catch {
+    return null;
+  }
+}
+
+export async function saveImportConfigAction(
+  _prev: BatchFormState,
+  formData: FormData,
+): Promise<BatchFormState> {
+  const actor = await resolveBatchActor();
+  const input = parseImportConfigInput(formData);
+  if (!input) return { error: "The configuration could not be read — reload and try again." };
+  const rawId = String(formData.get("configId") ?? "");
+  const result = await batchApi.saveImportConfig(actor, rawId === "" ? null : rawId, input);
+  if (result.status === "error") return { error: result.message };
+  revalidatePath("/batches/import-configs");
+  return { success: true };
+}
+
+export async function setImportConfigStatusAction(
+  _prev: BatchFormState,
+  formData: FormData,
+): Promise<BatchFormState> {
+  const actor = await resolveBatchActor();
+  const result = await batchApi.setImportConfigStatus(
+    actor,
+    String(formData.get("configId") ?? ""),
+    formData.get("status") === "active" ? "active" : "inactive",
+    String(formData.get("reason") ?? ""),
+  );
+  if (result.status === "error") return { error: result.message };
+  revalidatePath("/batches/import-configs");
+  return { success: true };
+}
+
+export async function previewImportAction(
+  _prev: ImportFormState,
+  formData: FormData,
+): Promise<ImportFormState> {
+  const actor = await resolveBatchActor();
+  const batchId = String(formData.get("batchId") ?? "");
+  const file = formData.get("file");
+  if (!(file instanceof File) || file.size === 0) return { error: "Choose the export file." };
+  if (file.size > 5 * 1024 * 1024) return { error: "Import files are limited to 5 MB in the mock." };
+  const result = await batchApi.previewImport(actor, batchId, String(formData.get("configId") ?? ""), {
+    fileName: file.name,
+    bytes: new Uint8Array(await file.arrayBuffer()),
+  });
+  if (result.status === "error") return { error: result.message };
+  return { preview: result.preview };
+}
+
+export async function confirmImportAction(
+  _prev: ImportFormState,
+  formData: FormData,
+): Promise<ImportFormState> {
+  const actor = await resolveBatchActor();
+  const batchId = String(formData.get("batchId") ?? "");
+  let resolutions: ImportResolution[];
+  let replaceCells: { rowNumber: number; analyteName: string }[];
+  try {
+    resolutions = (JSON.parse(String(formData.get("resolutionsJson") ?? "[]")) as unknown[]).map((r) => {
+      const item = r as { rowNumber?: unknown; action?: unknown; reason?: unknown; target?: { targetType?: unknown; targetId?: unknown } };
+      return item.action === "map"
+        ? {
+            rowNumber: Number(item.rowNumber),
+            action: "map" as const,
+            target: {
+              targetType: item.target?.targetType === "qc" ? ("qc" as const) : ("sample" as const),
+              targetId: String(item.target?.targetId ?? ""),
+            },
+          }
+        : { rowNumber: Number(item.rowNumber), action: "skip" as const, reason: String(item.reason ?? "") };
+    });
+    replaceCells = (JSON.parse(String(formData.get("replaceCellsJson") ?? "[]")) as unknown[]).map((c) => {
+      const item = c as { rowNumber?: unknown; analyteName?: unknown };
+      return { rowNumber: Number(item.rowNumber), analyteName: String(item.analyteName ?? "") };
+    });
+  } catch {
+    return { error: "The confirmation payload could not be read — run the preview again." };
+  }
+  const result = await batchApi.confirmImport(
+    actor,
+    batchId,
+    String(formData.get("token") ?? ""),
+    resolutions,
+    replaceCells,
+    formData.get("replaceAll") === "true",
+    String(formData.get("supersedeReason") ?? ""),
+  );
   if (result.status === "error") return { error: result.message };
   revalidatePath(`/batches/${batchId}`);
   return { success: true };

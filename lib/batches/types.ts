@@ -1,7 +1,9 @@
 import type {
   Attachment,
+  ImportColumnMapping,
   MockBatch,
   MockBatchEvent,
+  MockImportConfig,
   MockMeasurementRecord,
   SampleAcceptance,
 } from "@/lib/mock-db";
@@ -65,12 +67,18 @@ export type MethodBatchOptions = {
 
 export type BatchListRow = {
   id: string;
+  methodId: string; // US-D2 AC 4: method filter
   methodLabel: string;
   methodVersion: number;
   stepName: string;
   status: MockBatch["status"];
   statusLabel: string; // AC 8: "At step 2 of 5 — Digestion" / "Awaiting review" / …
   deadline: string | null; // AC 9: earliest job deadline among the samples
+  overdue: boolean; // US-D2 AC 2: deadline passed & batch not finished — a flag, never a status
+  assignee: string | null; // US-D2: email, or null = open pool
+  assigneeName: string | null;
+  canClaim: boolean; // US-D2 AC 6: unassigned + THIS actor may work on it
+  mine: boolean; // assigned to the requesting actor
   sampleCount: number;
   qcPositions: number;
   maxPositions: number;
@@ -139,6 +147,9 @@ export type BatchDetail = {
   /** Samples the edit dialog may ADD (excludes current members). */
   addableSamples: EligibleSample[];
   qcOptions: MethodBatchOptions["qcOptions"];
+  // --- US-D2 ---
+  assignee: string | null;
+  assigneeName: string | null;
   // --- US-D3 ---
   statusLabel: string; // AC 8, derived: "At step 2 of 5 — Digestion" / …
   deadline: string | null; // AC 9: earliest job deadline among the samples
@@ -199,6 +210,56 @@ export type BulkPreviewCell = {
 };
 
 export type BulkEntry = { target: ResultTarget; analyteId: string; raw: string };
+
+// ---- US-D5: instrument import -----------------------------------------------
+
+export type ImportConfigInput = {
+  name: string;
+  labId: string;
+  fileType: "csv" | "excel";
+  orientation: "wide" | "long";
+  idColumn: string;
+  columns: ImportColumnMapping[];
+  analyteColumn: string;
+  valueColumn: string;
+  longUnits: { analyteName: string; unit: string | null }[];
+  decimalSeparator: "comma" | "point";
+  csvDelimiter: "comma" | "semicolon" | "tab";
+};
+
+export type ImportRowMatch =
+  | { kind: "sample"; id: string }
+  | { kind: "qc"; materialId: string; code: string }
+  | { kind: "out-of-batch"; sampleId: string } // exists elsewhere — only skippable
+  | { kind: "unknown" }; // must be mapped or skipped with a reason (AC 4)
+
+export type ImportCellVerdict =
+  | { kind: "ok"; display: string }
+  | { kind: "conflict"; display: string; existing: string } // default keep (AC 7)
+  | { kind: "rejected"; message: string }; // per-cell — never blocks the rest (AC 5)
+
+export type ImportPreviewRow = {
+  rowNumber: number;
+  idCell: string;
+  match: ImportRowMatch;
+  cells: { analyteName: string; raw: string; verdict: ImportCellVerdict }[];
+};
+
+export type ImportPreview = {
+  token: string; // one-use staging token; confirm re-reads the SAME bytes
+  configId: string;
+  configName: string;
+  fileName: string;
+  rows: ImportPreviewRow[];
+  notices: string[]; // ignored columns, QC row-count vs quantity, missing headers
+  unitErrors: string[]; // AC 6 hard errors — the column's cells are rejected
+  conflictCount: number;
+  unresolvedCount: number; // unknown rows still needing map/skip (blocks confirm)
+};
+
+export type ImportResolution =
+  | { rowNumber: number; action: "map"; target: ResultTarget }
+  | { rowNumber: number; action: "skip"; reason: string };
 
 export type BatchActionResult =
   | { status: "success"; batchId?: string }
@@ -288,4 +349,57 @@ export interface BatchApi {
   /** AC 14: confirm the auto-read — the server RE-READS the worksheet itself
    * so origin "worksheet" can never be forged onto hand-typed values. */
   confirmWorksheet(actor: BatchActor, batchId: string): Promise<BatchActionResult>;
+
+  // --- US-D2: the coordination layer (open pool + optional assignment) ---
+
+  /** AC 6: claim an UNASSIGNED batch you are allowed to work on. */
+  claimBatch(actor: BatchActor, batchId: string): Promise<BatchActionResult>;
+  /** AC 6: release YOUR OWN claim (managers use assignBatch to unassign). */
+  releaseClaim(actor: BatchActor, batchId: string): Promise<BatchActionResult>;
+  /** AC 8: Admin/Lab manager (re/un)assign; an assignee without the right to
+   * work on the batch is blocked with a clear message. null = unassign. */
+  assignBatch(
+    actor: BatchActor,
+    batchId: string,
+    assigneeEmail: string | null,
+  ): Promise<BatchActionResult>;
+
+  // --- US-D5: instrument import (layer 1 of the two-layer model) ---
+
+  /** AC 1: lab-level masterdata — everyone with lab access may read (the
+   * import dialog needs the list); managing is Admin/Lab manager. */
+  listImportConfigs(actor: BatchActor, labId: string): Promise<MockImportConfig[]>;
+  /** Create (configId null) or edit. Deactivate-never-delete via setStatus. */
+  saveImportConfig(
+    actor: BatchActor,
+    configId: string | null,
+    input: ImportConfigInput,
+  ): Promise<BatchActionResult>;
+  setImportConfigStatus(
+    actor: BatchActor,
+    configId: string,
+    status: "active" | "inactive",
+    reason: string,
+  ): Promise<BatchActionResult>;
+  /** AC 3/4/5/6/7: parse file + configuration into the full preview — nothing
+   * is written; the file is staged under a one-use token for confirm. */
+  previewImport(
+    actor: BatchActor,
+    batchId: string,
+    configId: string,
+    file: { fileName: string; bytes: Uint8Array },
+  ): Promise<{ status: "error"; message: string } | { status: "success"; preview: ImportPreview }>;
+  /** AC 4/7/8/9/10: confirm — blocked while unresolved rows remain; stores
+   * the file + mapping snapshot + row outcomes as ONE event BEFORE writing
+   * records; conflicts default keep, opted-in replaces supersede with the
+   * once-entered reason; records carry origin `import` + the event id. */
+  confirmImport(
+    actor: BatchActor,
+    batchId: string,
+    token: string,
+    resolutions: ImportResolution[],
+    replaceCells: { rowNumber: number; analyteName: string }[],
+    replaceAll: boolean,
+    supersedeReason: string,
+  ): Promise<BatchActionResult>;
 }

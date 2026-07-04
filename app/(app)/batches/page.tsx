@@ -1,6 +1,6 @@
 import Link from "next/link";
 import { cookies } from "next/headers";
-import { batchApi } from "@/lib/batches";
+import { batchApi, stepNameOptionsForLab } from "@/lib/batches";
 import { activeLabsForUser, LAB_COOKIE, resolveActiveLab } from "@/lib/lab";
 import { mockDb } from "@/lib/mock-db";
 import {
@@ -11,7 +11,7 @@ import {
 } from "@/components/ui/breadcrumb";
 import { Button } from "@/components/ui/button";
 import { resolveBatchActor } from "./actions";
-import { BatchList } from "./batches-client";
+import { BatchQueue } from "./batches-client";
 
 export const metadata = { title: "Batches — LIMS" };
 
@@ -25,6 +25,8 @@ export default async function BatchesPage() {
     : resolveActiveLab(activeLabsForUser(actor.labs, actor.orgId), cookieStore.get(LAB_COOKIE)?.value);
 
   const rows = await batchApi.listBatches(actor, actor.isSupport ? null : (activeLab?.id ?? null));
+  // US-D2 AC 4: step filter over the lab's active methods' step names.
+  const stepOptions = activeLab ? stepNameOptionsForLab(actor.orgId, activeLab.id) : [];
 
   // Coarse button visibility only — the method-level rules (analyst clearance)
   // are enforced server-side and on the New-batch page itself.
@@ -56,14 +58,21 @@ export default async function BatchesPage() {
                 : "No active lab"}
           </p>
         </div>
-        {canCreate && activeLab && (
-          <Button size="sm" render={<Link href="/batches/new" />}>
-            + New batch
-          </Button>
-        )}
+        <div className="flex gap-2">
+          {(actor.role === "admin" || actor.role === "lab-manager") && activeLab && (
+            <Button size="sm" variant="outline" render={<Link href="/batches/import-configs" />}>
+              Import configurations
+            </Button>
+          )}
+          {canCreate && activeLab && (
+            <Button size="sm" render={<Link href="/batches/new" />}>
+              + New batch
+            </Button>
+          )}
+        </div>
       </div>
 
-      <BatchList rows={rows} />
+      <BatchQueue rows={rows} stepOptions={stepOptions} />
     </div>
   );
 }

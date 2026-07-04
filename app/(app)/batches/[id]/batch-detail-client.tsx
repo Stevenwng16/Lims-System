@@ -5,8 +5,12 @@ import { useEffect, useState } from "react";
 import { useActionState } from "react";
 import type { BatchDetail, ResultsGrid, StepRailEntry } from "@/lib/batches";
 import { ResultsGridSection } from "./results-grid";
+import type { ImportConfigOption } from "./import-dialog";
 import {
+  assignBatchAction,
+  claimBatchAction,
   completeStepAction,
+  releaseClaimAction,
   setBackAction,
   updateCompositionAction,
   uploadWorksheetAction,
@@ -67,10 +71,12 @@ function fmt(iso: string): string {
 function CompleteStepDialog({
   batchId,
   step,
+  assignedWarning,
   onDone,
 }: {
   batchId: string;
   step: StepRailEntry;
+  assignedWarning: string | null; // US-D2 AC 7: warn, never block
   onDone: () => void;
 }) {
   const [state, submit, pending] = useActionState(completeStepAction, initialState);
@@ -102,6 +108,10 @@ function CompleteStepDialog({
           <input type="hidden" name="batchId" value={batchId} />
           <input type="hidden" name="expectedStepIndex" value={step.index} />
           <input type="hidden" name="equipmentJson" value={equipmentJson} />
+
+          {assignedWarning && (
+            <p className="text-sm text-amber-700 dark:text-amber-400">⚠ {assignedWarning}</p>
+          )}
 
           {step.requiredTypes.length > 0 && (
             <fieldset className="space-y-3">
@@ -465,7 +475,113 @@ function WorksheetUpload({ batchId }: { batchId: string }) {
 
 // ---- the page ---------------------------------------------------------------
 
-type DialogState = { kind: "complete"; step: StepRailEntry } | { kind: "set-back" } | { kind: "void" } | { kind: "composition" } | null;
+// US-D2 AC 8: manager assignment — only workable users are offered; the
+// server re-validates the target's rights on submit.
+function AssignDialog({
+  detail,
+  assignableUsers,
+  onDone,
+}: {
+  detail: BatchDetail;
+  assignableUsers: { email: string; name: string }[];
+  onDone: () => void;
+}) {
+  const [state, submit, pending] = useActionState(assignBatchAction, initialState);
+  const [assignee, setAssignee] = useState(detail.assignee ?? "");
+
+  useEffect(() => {
+    if (state.success) onDone();
+  }, [state, onDone]);
+
+  return (
+    <Dialog open onOpenChange={(o) => !o && !pending && onDone()}>
+      <DialogContent>
+        <DialogHeader>
+          <DialogTitle>Assign — {detail.record.id}</DialogTitle>
+          <DialogDescription>
+            The assignee signals who is on it; a cleared colleague can still act (open pool).
+            Only users allowed to work on this batch can be assigned.
+          </DialogDescription>
+        </DialogHeader>
+        <form action={submit} className="space-y-4">
+          <input type="hidden" name="batchId" value={detail.record.id} />
+          <input type="hidden" name="assignee" value={assignee} />
+          <div className="space-y-2">
+            <Label>Assignee</Label>
+            <Select value={assignee || "none"} onValueChange={(v) => v && setAssignee(v === "none" ? "" : v)}>
+              <SelectTrigger className="w-72">
+                <SelectValue />
+              </SelectTrigger>
+              <SelectContent>
+                <SelectItem value="none">— Unassigned (open pool) —</SelectItem>
+                {assignableUsers.map((u) => (
+                  <SelectItem key={u.email} value={u.email}>
+                    {u.name}
+                  </SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
+          </div>
+          {state.error && (
+            <Alert variant="destructive">
+              <AlertDescription>{state.error}</AlertDescription>
+            </Alert>
+          )}
+          <Button type="submit" className="w-full" disabled={pending}>
+            {pending ? "Saving…" : "Save assignment"}
+          </Button>
+        </form>
+      </DialogContent>
+    </Dialog>
+  );
+}
+
+function ClaimReleaseButtons({
+  detail,
+  actorEmail,
+  canWork,
+}: {
+  detail: BatchDetail;
+  actorEmail: string;
+  canWork: boolean;
+}) {
+  const [claimState, claimSubmit, claimPending] = useActionState(claimBatchAction, initialState);
+  const [releaseState, releaseSubmit, releasePending] = useActionState(releaseClaimAction, initialState);
+  const active = detail.record.status === "open" || detail.record.status === "awaiting-review";
+  if (!active) return null;
+
+  return (
+    <span className="inline-flex items-center gap-2">
+      {detail.assignee === null && canWork && (
+        <form action={claimSubmit} className="inline">
+          <input type="hidden" name="batchId" value={detail.record.id} />
+          <Button type="submit" size="xs" variant="outline" disabled={claimPending}>
+            {claimPending ? "…" : "Claim"}
+          </Button>
+        </form>
+      )}
+      {detail.assignee === actorEmail && (
+        <form action={releaseSubmit} className="inline">
+          <input type="hidden" name="batchId" value={detail.record.id} />
+          <Button type="submit" size="xs" variant="ghost" disabled={releasePending}>
+            {releasePending ? "…" : "Release claim"}
+          </Button>
+        </form>
+      )}
+      {(claimState.error || releaseState.error) && (
+        <span className="text-xs text-destructive">{claimState.error ?? releaseState.error}</span>
+      )}
+    </span>
+  );
+}
+
+type DialogState =
+  | { kind: "complete"; step: StepRailEntry }
+  | { kind: "set-back" }
+  | { kind: "void" }
+  | { kind: "composition" }
+  | { kind: "assign" }
+  | null;
 
 export function BatchDetailClient({
   detail,
@@ -475,6 +591,9 @@ export function BatchDetailClient({
   canManage,
   downloadable,
   jobLabel,
+  actorEmail,
+  assignableUsers,
+  importConfigs,
 }: {
   detail: BatchDetail;
   grid: ResultsGrid | null;
@@ -483,6 +602,9 @@ export function BatchDetailClient({
   canManage: boolean;
   downloadable: boolean;
   jobLabel: string;
+  actorEmail: string;
+  assignableUsers: { email: string; name: string }[];
+  importConfigs: ImportConfigOption[];
 }) {
   const [dialog, setDialog] = useState<DialogState>(null);
   const close = () => setDialog(null);
@@ -491,6 +613,11 @@ export function BatchDetailClient({
   const today = new Date().toISOString().slice(0, 10);
   const deadlineNear = detail.deadline !== null && detail.deadline <= today;
   const currentStep = detail.steps.find((s) => s.state === "current") ?? null;
+  // US-D2 AC 7: assigned to someone ELSE — warn, never block.
+  const assignedToOther = detail.assignee !== null && detail.assignee !== actorEmail;
+  const assignedWarning = assignedToOther
+    ? `Assigned to ${detail.assigneeName} — assignment coordinates, it never gates. Continue?`
+    : null;
 
   return (
     <>
@@ -520,6 +647,17 @@ export function BatchDetailClient({
           <span className={deadlineNear ? "font-medium text-amber-700 dark:text-amber-400" : ""}>
             {detail.deadline ? `due ${detail.deadline} ${deadlineNear ? "⚠" : ""}` : "no deadline"}
           </span>
+          <span>·</span>
+          <span>
+            Assignee: {detail.assigneeName ?? "— (open pool)"}
+            {detail.assignee === actorEmail && " (you)"}
+          </span>
+          <ClaimReleaseButtons detail={detail} actorEmail={actorEmail} canWork={canWork} />
+          {canManage && (batch.status === "open" || batch.status === "awaiting-review") && (
+            <Button size="xs" variant="ghost" onClick={() => setDialog({ kind: "assign" })}>
+              Assign…
+            </Button>
+          )}
           {batch.workingCopy && downloadable && (
             <>
               <span>·</span>
@@ -537,6 +675,12 @@ export function BatchDetailClient({
               Received and can be re-batched.
             </AlertDescription>
           </Alert>
+        )}
+        {assignedToOther && canWork && batch.status === "open" && (
+          <p className="mt-2 text-sm text-amber-700 dark:text-amber-400">
+            ⚠ Assigned to {detail.assigneeName} — you can still act on this batch (open pool); the
+            assignment only signals who is on it.
+          </p>
         )}
       </div>
 
@@ -721,7 +865,12 @@ export function BatchDetailClient({
         {/* Results (US-D4) — the manual entry grid on the ADR-2 record model. */}
         <TabsContent value="results" className="mt-4">
           {grid ? (
-            <ResultsGridSection batchId={batch.id} grid={grid} canEnter={canWork} />
+            <ResultsGridSection
+              batchId={batch.id}
+              grid={grid}
+              canEnter={canWork}
+              importConfigs={importConfigs}
+            />
           ) : (
             <p className="text-sm text-muted-foreground">The results grid could not be loaded.</p>
           )}
@@ -778,8 +927,39 @@ export function BatchDetailClient({
               )}
               {canWork && batch.status === "open" && <WorksheetUpload batchId={batch.id} />}
               <p className="text-xs text-muted-foreground">
-                Replacing uploads a new version — nothing is ever overwritten. Data-entry and
-                import files join this tab with US-D4/D5.
+                Replacing uploads a new version — nothing is ever overwritten.
+              </p>
+            </CardContent>
+          </Card>
+
+          <Card>
+            <CardHeader>
+              <CardTitle>Imports (US-D5)</CardTitle>
+            </CardHeader>
+            <CardContent className="space-y-2">
+              {batch.imports.length === 0 ? (
+                <p className="text-sm text-muted-foreground">No instrument imports yet.</p>
+              ) : (
+                <ul className="space-y-2">
+                  {batch.imports.map((imp) => (
+                    <li key={imp.id} className="text-xs">
+                      <p className="break-all font-mono text-muted-foreground">
+                        {imp.file.fileName} · sha256 {imp.file.sha256.slice(0, 16)}… · {fmt(imp.at)} by {imp.by}
+                      </p>
+                      <p className="text-muted-foreground">
+                        config &quot;{imp.configName}&quot; (mapping frozen on the event) ·{" "}
+                        {imp.rows.filter((r) => r.outcome === "imported").length} row(s) imported ·{" "}
+                        {imp.rows.filter((r) => r.outcome === "skipped").length} skipped ·{" "}
+                        {imp.rows.filter((r) => r.outcome === "rejected").length} rejected
+                        {imp.supersedeReason && ` · replacements: ${imp.supersedeReason}`}
+                      </p>
+                    </li>
+                  ))}
+                </ul>
+              )}
+              <p className="text-xs text-muted-foreground">
+                Each import is one self-contained event: the original file, its checksum, the
+                applied mapping and every row&apos;s outcome — reproducible from the event alone.
               </p>
             </CardContent>
           </Card>
@@ -820,7 +1000,15 @@ export function BatchDetailClient({
       </Tabs>
 
       {dialog?.kind === "complete" && (
-        <CompleteStepDialog batchId={batch.id} step={dialog.step} onDone={close} />
+        <CompleteStepDialog
+          batchId={batch.id}
+          step={dialog.step}
+          assignedWarning={assignedWarning}
+          onDone={close}
+        />
+      )}
+      {dialog?.kind === "assign" && (
+        <AssignDialog detail={detail} assignableUsers={assignableUsers} onDone={close} />
       )}
       {dialog?.kind === "set-back" && <SetBackDialog detail={detail} onDone={close} />}
       {dialog?.kind === "void" && <VoidBatchDialog detail={detail} onDone={close} />}

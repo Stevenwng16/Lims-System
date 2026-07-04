@@ -290,6 +290,67 @@ export type BatchQcEntry = {
   quantity: number; // ≥1; each unit occupies a position (AC 6/7)
 };
 
+// Import configurations (US-D5 AC 1) — lab-level masterdata: which column
+// carries the ID, which analyte each column maps to (with its unit — the
+// factor-1000 guard), and the DECLARED separators (ADR-4: declared, never
+// auto-detected). Deactivate, never delete.
+export type ImportColumnMapping = {
+  header: string; // column header in the file
+  analyteName: string; // matched to the method analyte by name (ci)
+  unit: string | null; // must EQUAL the method analyte's unit (US-D5 AC 6)
+};
+
+export type MockImportConfig = {
+  id: string;
+  orgId: string;
+  labId: string;
+  name: string;
+  fileType: "csv" | "excel";
+  // wide: one row per sample, one column per analyte;
+  // long: one row per measurement (ID, analyte, value).
+  orientation: "wide" | "long";
+  idColumn: string; // header of the sample/QC-ID column
+  columns: ImportColumnMapping[]; // wide orientation
+  analyteColumn: string; // long orientation
+  valueColumn: string; // long orientation
+  longUnits: { analyteName: string; unit: string | null }[]; // long orientation
+  decimalSeparator: "comma" | "point"; // declared (ADR-4)
+  csvDelimiter: "comma" | "semicolon" | "tab"; // declared (decision 4 Jul 2026)
+  status: "active" | "inactive";
+  statusReason?: string;
+};
+
+// The import event (US-D5 AC 8, decision 4 Jul 2026): ONE self-contained
+// append-only record — original file + checksum, the mapping frozen as
+// applied, and every row's outcome. An import is reproducible from this alone.
+export type ImportCellOutcome = {
+  analyteName: string;
+  raw: string;
+  result: "imported" | "superseded-existing" | "kept-existing" | "rejected";
+  reason: string; // rejection reason, or "" when clean
+};
+
+export type ImportRowOutcome = {
+  rowNumber: number; // 1-based data row in the file
+  idCell: string;
+  matched: string | null; // "sample:<id>" / "qc:<materialId>" / null
+  outcome: "imported" | "skipped" | "rejected";
+  reason: string; // skip/rejection reason, "" when imported
+  cells: ImportCellOutcome[];
+};
+
+export type MockImportEvent = {
+  id: string;
+  at: string; // ISO
+  by: string;
+  file: Attachment; // stored immutably with real SHA-256 (ADR-3, moment 1)
+  configId: string;
+  configName: string;
+  configSnapshot: string; // frozen JSON of the mapping exactly as applied
+  supersedeReason: string | null; // the once-at-confirm replace reason (AC 7)
+  rows: ImportRowOutcome[];
+};
+
 // Measurement records (US-D4, decisions 4 Jul 2026 — ADR-2 made concrete).
 // Append-only rows: a correction is a NEW record with a mandatory reason and
 // a `supersedes` pointer; the current cell value is the newest record for
@@ -322,6 +383,7 @@ export type MockMeasurementRecord = {
   value: ResultValue;
   origin: ResultOrigin;
   worksheetVersion: number | null; // set when origin = "worksheet" (AC 14)
+  importEventId: string | null; // set when origin = "import" (US-D5 AC 9)
   enteredBy: string; // automatic attribution (invariant 6)
   enteredAt: string; // ISO
   supersedes: string | null; // the record this one corrects (AC 8)
@@ -346,7 +408,9 @@ export type MockBatchEvent = {
     | "voided"
     | "worksheet-uploaded"
     | "result-entered"
-    | "result-superseded";
+    | "result-superseded"
+    | "assignment-changed" // US-D2 AC 9: claim / release / (re/un)assign
+    | "import-confirmed"; // US-D5 AC 10
   summary: string;
   /** step-completed: which step (a redo appends a NEW record, AC 6). */
   step?: { index: number; id: string; name: string };
@@ -371,6 +435,9 @@ export type MockBatch = {
   voidReason?: string;
   currentStepIndex: number; // 0-based into the PINNED version's steps (AC 9)
   compositionLatched: boolean; // one-way (AC 10) — set true by US-D3/D4, never unset
+  // US-D2 AC 6/7: the assignee COORDINATES, it never gates — any cleared
+  // colleague can still act (the UI warns, the server does not block).
+  assignee: string | null; // user email, or null = in the open pool
   sampleIds: string[]; // ordered client samples
   qc: BatchQcEntry[]; // one entry per material, with quantity (AC 7)
   workingCopy: {
@@ -385,6 +452,8 @@ export type MockBatch = {
   // ADR-2 measurement records (US-D4 AC 7) — append-only; a supersede is a
   // NEW row, the chain is walked via `supersedes` pointers.
   results: MockMeasurementRecord[];
+  // Import events (US-D5 AC 8) — append-only, self-contained snapshots.
+  imports: MockImportEvent[];
   reagentLotIds: string[]; // AC 11 design hook — post-MVP story fills it
   events: MockBatchEvent[]; // append-only (AC 13)
   createdAt: string; // ISO datetime — permanently carried (AC 13)
@@ -549,6 +618,24 @@ export type MockDb = {
   // Batches under org-composite keys ("<orgId>:<batchNumber>") like jobs, so an
   // org-unique number can never collide across tenants (invariant 5).
   batches: Map<string, MockBatch>;
+  // Import configurations (US-D5 AC 1) — lab-level masterdata.
+  importConfigs: Map<string, MockImportConfig>;
+  // EPHEMERAL preview staging (not domain data): a previewed file is held
+  // under a token until confirm re-reads it server-side, so the stored event
+  // is provably built from the exact bytes that were previewed. The real
+  // backend uses temp object storage with the same one-token contract.
+  pendingImports: Map<
+    string,
+    {
+      orgId: string;
+      actorEmail: string;
+      batchId: string;
+      configId: string;
+      fileName: string;
+      bytes: Uint8Array;
+      createdAt: number;
+    }
+  >;
   // Generated working-copy bytes (ADR-3 mock), keyed "<orgId>:<batchNumber>".
   // Kept out of the batch record so RSC serialization never ships file bytes.
   batchFiles: Map<string, Uint8Array>;
@@ -1394,6 +1481,7 @@ function seedDb(): MockDb {
     status: "completed",
     currentStepIndex: 4, // final step of the pinned v1 (Report)
     compositionLatched: true,
+    assignee: null,
     sampleIds: ["MET26-00004.001"],
     qc: [{ materialId: "qc-cs1", quantity: 1 }],
     workingCopy: {
@@ -1412,6 +1500,7 @@ function seedDb(): MockDb {
         uploadedBy: "analyst@demolab.nl",
       },
     ],
+    imports: [],
     reagentLotIds: [],
     events: [
       { id: "bev-1-created", at: "2026-06-21T09:00:00.000Z", by: "labmanager@demolab.nl", type: "created", summary: "Batch created: 1 sample + 1 QC position (m-icpms v1)" },
@@ -1425,9 +1514,9 @@ function seedDb(): MockDb {
     // Reviewed results (validity set by review — US-D6's transition, seeded
     // here so the completed demo batch is coherent).
     results: [
-      { id: "res-b1-1", targetType: "sample", targetId: "MET26-00004.001", analyteId: "a1", methodId: "m-icpms", methodVersion: 1, value: { kind: "numeric", value: "0.042" }, origin: "manual", worksheetVersion: null, enteredBy: "analyst@demolab.nl", enteredAt: "2026-06-23T13:00:00.000Z", supersedes: null, supersedeReason: null, validity: "valid" },
-      { id: "res-b1-2", targetType: "sample", targetId: "MET26-00004.001", analyteId: "a2", methodId: "m-icpms", methodVersion: 1, value: { kind: "censored", qualifier: "<", boundary: "0.005" }, origin: "manual", worksheetVersion: null, enteredBy: "analyst@demolab.nl", enteredAt: "2026-06-23T13:01:00.000Z", supersedes: null, supersedeReason: null, validity: "valid" },
-      { id: "res-b1-3", targetType: "qc", targetId: "qc-cs1", analyteId: "a1", methodId: "m-icpms", methodVersion: 1, value: { kind: "numeric", value: "5.1" }, origin: "manual", worksheetVersion: null, enteredBy: "analyst@demolab.nl", enteredAt: "2026-06-23T13:02:00.000Z", supersedes: null, supersedeReason: null, validity: "valid" },
+      { id: "res-b1-1", targetType: "sample", targetId: "MET26-00004.001", analyteId: "a1", methodId: "m-icpms", methodVersion: 1, value: { kind: "numeric", value: "0.042" }, origin: "manual", worksheetVersion: null, importEventId: null, enteredBy: "analyst@demolab.nl", enteredAt: "2026-06-23T13:00:00.000Z", supersedes: null, supersedeReason: null, validity: "valid" },
+      { id: "res-b1-2", targetType: "sample", targetId: "MET26-00004.001", analyteId: "a2", methodId: "m-icpms", methodVersion: 1, value: { kind: "censored", qualifier: "<", boundary: "0.005" }, origin: "manual", worksheetVersion: null, importEventId: null, enteredBy: "analyst@demolab.nl", enteredAt: "2026-06-23T13:01:00.000Z", supersedes: null, supersedeReason: null, validity: "valid" },
+      { id: "res-b1-3", targetType: "qc", targetId: "qc-cs1", analyteId: "a1", methodId: "m-icpms", methodVersion: 1, value: { kind: "numeric", value: "5.1" }, origin: "manual", worksheetVersion: null, importEventId: null, enteredBy: "analyst@demolab.nl", enteredAt: "2026-06-23T13:02:00.000Z", supersedes: null, supersedeReason: null, validity: "valid" },
     ],
     createdAt: "2026-06-21T09:00:00.000Z",
     createdBy: "labmanager@demolab.nl",
@@ -1442,6 +1531,7 @@ function seedDb(): MockDb {
     status: "open",
     currentStepIndex: 2, // work under way (Measurement) → composition latched
     compositionLatched: true,
+    assignee: "analyst@demolab.nl", // US-D2 demo: claimed by Sam Analyst
     sampleIds: ["MET26-00003.001"],
     qc: [{ materialId: "qc-blk", quantity: 2 }],
     workingCopy: {
@@ -1451,6 +1541,7 @@ function seedDb(): MockDb {
       generatedAt: "2026-06-28T10:15:00.000Z",
     },
     worksheets: [],
+    imports: [],
     reagentLotIds: [],
     events: [
       { id: "bev-2-created", at: "2026-06-28T10:15:00.000Z", by: "labmanager@demolab.nl", type: "created", summary: "Batch created: 1 sample + 2 QC positions (m-icpms v1)" },
@@ -1462,13 +1553,58 @@ function seedDb(): MockDb {
     // Correction-chain demo (AC 8): the first value stays, superseded with a
     // reason; the grid shows 12.4 with the ⟳ indicator.
     results: [
-      { id: "res-b2-1", targetType: "sample", targetId: "MET26-00003.001", analyteId: "a1", methodId: "m-icpms", methodVersion: 1, value: { kind: "numeric", value: "12.9" }, origin: "manual", worksheetVersion: null, enteredBy: "analyst@demolab.nl", enteredAt: "2026-06-29T14:00:00.000Z", supersedes: null, supersedeReason: null, validity: "pending" },
-      { id: "res-b2-2", targetType: "sample", targetId: "MET26-00003.001", analyteId: "a1", methodId: "m-icpms", methodVersion: 1, value: { kind: "numeric", value: "12.4" }, origin: "manual", worksheetVersion: null, enteredBy: "analyst@demolab.nl", enteredAt: "2026-06-29T16:20:00.000Z", supersedes: "res-b2-1", supersedeReason: "transcription error, worksheet says 12.4", validity: "pending" },
+      { id: "res-b2-1", targetType: "sample", targetId: "MET26-00003.001", analyteId: "a1", methodId: "m-icpms", methodVersion: 1, value: { kind: "numeric", value: "12.9" }, origin: "manual", worksheetVersion: null, importEventId: null, enteredBy: "analyst@demolab.nl", enteredAt: "2026-06-29T14:00:00.000Z", supersedes: null, supersedeReason: null, validity: "pending" },
+      { id: "res-b2-2", targetType: "sample", targetId: "MET26-00003.001", analyteId: "a1", methodId: "m-icpms", methodVersion: 1, value: { kind: "numeric", value: "12.4" }, origin: "manual", worksheetVersion: null, importEventId: null, enteredBy: "analyst@demolab.nl", enteredAt: "2026-06-29T16:20:00.000Z", supersedes: "res-b2-1", supersedeReason: "transcription error, worksheet says 12.4", validity: "pending" },
     ],
     createdAt: "2026-06-28T10:15:00.000Z",
     createdBy: "labmanager@demolab.nl",
   });
   const batchFiles = new Map<string, Uint8Array>(); // seed working copies keep metadata only
+
+  // Seed import configurations (US-D5) for the Metals lab — one per
+  // orientation, both with DECLARED separators (semicolon/comma is the common
+  // Dutch instrument-export dialect).
+  const importConfigs = new Map<string, MockImportConfig>();
+  importConfigs.set("imp-icp-wide", {
+    id: "imp-icp-wide",
+    orgId: "org-demolab",
+    labId: "lab-met",
+    name: "ICP-OES export (wide)",
+    fileType: "csv",
+    orientation: "wide",
+    idColumn: "Sample",
+    columns: [
+      { header: "Pb", analyteName: "Pb", unit: "mg/L" },
+      { header: "Cd", analyteName: "Cd", unit: "mg/L" },
+      { header: "Zn", analyteName: "Zn", unit: "mg/L" },
+    ],
+    analyteColumn: "",
+    valueColumn: "",
+    longUnits: [],
+    decimalSeparator: "comma",
+    csvDelimiter: "semicolon",
+    status: "active",
+  });
+  importConfigs.set("imp-icp-long", {
+    id: "imp-icp-long",
+    orgId: "org-demolab",
+    labId: "lab-met",
+    name: "ICP-OES export (long)",
+    fileType: "csv",
+    orientation: "long",
+    idColumn: "Sample",
+    columns: [],
+    analyteColumn: "Element",
+    valueColumn: "Result",
+    longUnits: [
+      { analyteName: "Pb", unit: "mg/L" },
+      { analyteName: "Cd", unit: "mg/L" },
+      { analyteName: "Zn", unit: "mg/L" },
+    ],
+    decimalSeparator: "point",
+    csvDelimiter: "comma",
+    status: "active",
+  });
 
   // Counters consistent with the seed (5 Metals jobs in 2026; sample seq per job).
   sequences.set("job:org-demolab:lab-met:2026", 5);
@@ -1491,11 +1627,13 @@ function seedDb(): MockDb {
     jobs,
     batches,
     batchFiles,
+    importConfigs,
+    pendingImports: new Map(),
     sequences,
   };
 }
 
-export const mockDb: MockDb = ((globalThis as Record<string, unknown>).__limsMockDbV19 ??=
+export const mockDb: MockDb = ((globalThis as Record<string, unknown>).__limsMockDbV21 ??=
   seedDb()) as MockDb;
 
 export function getOrgSettings(orgId: string): OrgSettings {

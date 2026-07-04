@@ -1,5 +1,5 @@
 import { notFound } from "next/navigation";
-import { batchApi, canComposeBatch, canWorkBatch } from "@/lib/batches";
+import { assignableUsersForBatch, batchApi, canComposeBatch, canWorkBatch } from "@/lib/batches";
 import { getOrgSettings } from "@/lib/mock-db";
 import {
   Breadcrumb,
@@ -39,6 +39,13 @@ export default async function BatchDetailPage({ params }: { params: Promise<{ id
   // US-D4: the results grid (entry rights = same canWork rule; the grid
   // itself is visible to every role that sees the batch, read-only included).
   const grid = await batchApi.resultsGrid(actor, id);
+  // US-D2 AC 8: the manager's assign dialog offers only users allowed to
+  // work this batch (the server re-checks on submit anyway).
+  const assignableUsers = canManage ? assignableUsersForBatch(actor.orgId, id) : [];
+  // US-D5: active import configurations of the batch's lab.
+  const importConfigs = (await batchApi.listImportConfigs(actor, detail.record.labId))
+    .filter((c) => c.status === "active")
+    .map((c) => ({ id: c.id, name: c.name, fileType: c.fileType }));
 
   return (
     <div className="mx-auto max-w-4xl space-y-6">
@@ -61,6 +68,9 @@ export default async function BatchDetailPage({ params }: { params: Promise<{ id
         canManage={canManage}
         downloadable={downloadable}
         jobLabel={jobLabel}
+        actorEmail={actor.email}
+        assignableUsers={assignableUsers}
+        importConfigs={importConfigs}
       />
     </div>
   );
