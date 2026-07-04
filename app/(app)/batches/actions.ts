@@ -436,6 +436,93 @@ export async function confirmImportAction(
   return { success: true };
 }
 
+export async function setValidityAction(
+  _prev: BatchFormState,
+  formData: FormData,
+): Promise<BatchFormState> {
+  const actor = await resolveBatchActor();
+  const batchId = String(formData.get("batchId") ?? "");
+  const result = await batchApi.setResultValidity(
+    actor,
+    batchId,
+    String(formData.get("recordId") ?? ""),
+    formData.get("validity") === "valid" ? "valid" : "rejected",
+    String(formData.get("reason") ?? ""),
+  );
+  if (result.status === "error") return { error: result.message };
+  revalidatePath(`/batches/${batchId}`);
+  return { success: true };
+}
+
+export async function validateAllAction(
+  _prev: BatchFormState,
+  formData: FormData,
+): Promise<BatchFormState> {
+  const actor = await resolveBatchActor();
+  const batchId = String(formData.get("batchId") ?? "");
+  const result = await batchApi.validateAllUnflagged(actor, batchId);
+  if (result.status === "error") return { error: result.message };
+  revalidatePath(`/batches/${batchId}`);
+  return { success: true };
+}
+
+export async function closeGapAction(
+  _prev: BatchFormState,
+  formData: FormData,
+): Promise<BatchFormState> {
+  const actor = await resolveBatchActor();
+  const batchId = String(formData.get("batchId") ?? "");
+  const result = await batchApi.closeGapNoResult(
+    actor,
+    batchId,
+    {
+      targetType: formData.get("targetType") === "qc" ? "qc" : "sample",
+      targetId: String(formData.get("targetId") ?? ""),
+    },
+    String(formData.get("analyteId") ?? ""),
+    String(formData.get("reason") ?? ""),
+  );
+  if (result.status === "error") return { error: result.message };
+  revalidatePath(`/batches/${batchId}`);
+  return { success: true };
+}
+
+export async function completeBatchAction(
+  _prev: BatchFormState,
+  formData: FormData,
+): Promise<BatchFormState> {
+  const actor = await resolveBatchActor();
+  const batchId = String(formData.get("batchId") ?? "");
+  const result = await batchApi.completeBatch(actor, batchId);
+  if (result.status === "error") return { error: result.message };
+  revalidatePath("/batches");
+  revalidatePath(`/batches/${batchId}`);
+  revalidatePath("/jobs"); // completion cascades through the derived statuses
+  return { success: true };
+}
+
+export async function replaceResultAction(
+  _prev: BatchFormState,
+  formData: FormData,
+): Promise<BatchFormState> {
+  const actor = await resolveBatchActor();
+  const batchId = String(formData.get("batchId") ?? "");
+  const result = await batchApi.replaceCompletedResult(
+    actor,
+    batchId,
+    {
+      targetType: formData.get("targetType") === "qc" ? "qc" : "sample",
+      targetId: String(formData.get("targetId") ?? ""),
+    },
+    String(formData.get("analyteId") ?? ""),
+    parseResultValueInput(formData),
+    String(formData.get("replaceReason") ?? ""),
+  );
+  if (result.status === "error") return { error: result.message };
+  revalidatePath(`/batches/${batchId}`);
+  return { success: true };
+}
+
 export async function updateCompositionAction(
   _prev: BatchFormState,
   formData: FormData,

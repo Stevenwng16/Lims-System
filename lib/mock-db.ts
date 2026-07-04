@@ -388,7 +388,16 @@ export type MockMeasurementRecord = {
   enteredAt: string; // ISO
   supersedes: string | null; // the record this one corrects (AC 8)
   supersedeReason: string | null; // mandatory when superseding
-  validity: "pending" | "valid" | "rejected"; // US-D6 owns transitions
+  // US-D6: the review decision — the ONE sanctioned status column (D4
+  // decision); every transition is an audit event with attribution.
+  validity: "pending" | "valid" | "rejected";
+  validitySetBy: string | null;
+  validitySetAt: string | null; // ISO
+  validityReason: string | null; // mandatory on reject (AC 3)
+  // US-D6 AC 8 — the §7.8.8 trigger: raised on every post-completion
+  // replacement (conservative in the MVP; epic F refines to real
+  // issued-report linkage). The batch-level flag is DERIVED from these.
+  amendmentCheckRequired: boolean;
 };
 
 // One list is the whole workflow history (US-D3 decision 3 Jul 2026): every
@@ -410,7 +419,9 @@ export type MockBatchEvent = {
     | "result-entered"
     | "result-superseded"
     | "assignment-changed" // US-D2 AC 9: claim / release / (re/un)assign
-    | "import-confirmed"; // US-D5 AC 10
+    | "import-confirmed" // US-D5 AC 10
+    | "result-validity" // US-D6 AC 3/10: valid / rejected + reason, per result
+    | "batch-completed"; // US-D6 AC 6: the completion record IS the approval act
   summary: string;
   /** step-completed: which step (a redo appends a NEW record, AC 6). */
   step?: { index: number; id: string; name: string };
@@ -1510,13 +1521,14 @@ function seedDb(): MockDb {
       { id: "bev-1-s4", at: "2026-06-24T14:00:00.000Z", by: "labmanager@demolab.nl", type: "step-completed", summary: "Step 4 \"Review\" completed", step: { index: 3, id: "s4", name: "Review" } },
       { id: "bev-1-ws", at: "2026-06-24T15:40:00.000Z", by: "analyst@demolab.nl", type: "worksheet-uploaded", summary: "Completed worksheet v1: worksheet_METB26-0001_completed.xlsx" },
       { id: "bev-1-s5", at: "2026-06-24T16:00:00.000Z", by: "labmanager@demolab.nl", type: "step-completed", summary: "Step 5 \"Report\" completed — batch moved to Awaiting review", step: { index: 4, id: "s5", name: "Report" } },
+      { id: "bev-1-done", at: "2026-06-24T16:30:00.000Z", by: "labmanager@demolab.nl", type: "batch-completed", summary: "Batch completed — 3 result(s) valid, 0 rejected (review approval)" },
     ],
     // Reviewed results (validity set by review — US-D6's transition, seeded
     // here so the completed demo batch is coherent).
     results: [
-      { id: "res-b1-1", targetType: "sample", targetId: "MET26-00004.001", analyteId: "a1", methodId: "m-icpms", methodVersion: 1, value: { kind: "numeric", value: "0.042" }, origin: "manual", worksheetVersion: null, importEventId: null, enteredBy: "analyst@demolab.nl", enteredAt: "2026-06-23T13:00:00.000Z", supersedes: null, supersedeReason: null, validity: "valid" },
-      { id: "res-b1-2", targetType: "sample", targetId: "MET26-00004.001", analyteId: "a2", methodId: "m-icpms", methodVersion: 1, value: { kind: "censored", qualifier: "<", boundary: "0.005" }, origin: "manual", worksheetVersion: null, importEventId: null, enteredBy: "analyst@demolab.nl", enteredAt: "2026-06-23T13:01:00.000Z", supersedes: null, supersedeReason: null, validity: "valid" },
-      { id: "res-b1-3", targetType: "qc", targetId: "qc-cs1", analyteId: "a1", methodId: "m-icpms", methodVersion: 1, value: { kind: "numeric", value: "5.1" }, origin: "manual", worksheetVersion: null, importEventId: null, enteredBy: "analyst@demolab.nl", enteredAt: "2026-06-23T13:02:00.000Z", supersedes: null, supersedeReason: null, validity: "valid" },
+      { id: "res-b1-1", targetType: "sample", targetId: "MET26-00004.001", analyteId: "a1", methodId: "m-icpms", methodVersion: 1, value: { kind: "numeric", value: "0.042" }, origin: "manual", worksheetVersion: null, importEventId: null, enteredBy: "analyst@demolab.nl", enteredAt: "2026-06-23T13:00:00.000Z", supersedes: null, supersedeReason: null, validity: "valid", validitySetBy: "labmanager@demolab.nl", validitySetAt: "2026-06-24T16:00:00.000Z", validityReason: null, amendmentCheckRequired: false },
+      { id: "res-b1-2", targetType: "sample", targetId: "MET26-00004.001", analyteId: "a2", methodId: "m-icpms", methodVersion: 1, value: { kind: "censored", qualifier: "<", boundary: "0.005" }, origin: "manual", worksheetVersion: null, importEventId: null, enteredBy: "analyst@demolab.nl", enteredAt: "2026-06-23T13:01:00.000Z", supersedes: null, supersedeReason: null, validity: "valid", validitySetBy: "labmanager@demolab.nl", validitySetAt: "2026-06-24T16:00:00.000Z", validityReason: null, amendmentCheckRequired: false },
+      { id: "res-b1-3", targetType: "qc", targetId: "qc-cs1", analyteId: "a1", methodId: "m-icpms", methodVersion: 1, value: { kind: "numeric", value: "5.1" }, origin: "manual", worksheetVersion: null, importEventId: null, enteredBy: "analyst@demolab.nl", enteredAt: "2026-06-23T13:02:00.000Z", supersedes: null, supersedeReason: null, validity: "valid", validitySetBy: "labmanager@demolab.nl", validitySetAt: "2026-06-24T16:00:00.000Z", validityReason: null, amendmentCheckRequired: false },
     ],
     createdAt: "2026-06-21T09:00:00.000Z",
     createdBy: "labmanager@demolab.nl",
@@ -1553,8 +1565,8 @@ function seedDb(): MockDb {
     // Correction-chain demo (AC 8): the first value stays, superseded with a
     // reason; the grid shows 12.4 with the ⟳ indicator.
     results: [
-      { id: "res-b2-1", targetType: "sample", targetId: "MET26-00003.001", analyteId: "a1", methodId: "m-icpms", methodVersion: 1, value: { kind: "numeric", value: "12.9" }, origin: "manual", worksheetVersion: null, importEventId: null, enteredBy: "analyst@demolab.nl", enteredAt: "2026-06-29T14:00:00.000Z", supersedes: null, supersedeReason: null, validity: "pending" },
-      { id: "res-b2-2", targetType: "sample", targetId: "MET26-00003.001", analyteId: "a1", methodId: "m-icpms", methodVersion: 1, value: { kind: "numeric", value: "12.4" }, origin: "manual", worksheetVersion: null, importEventId: null, enteredBy: "analyst@demolab.nl", enteredAt: "2026-06-29T16:20:00.000Z", supersedes: "res-b2-1", supersedeReason: "transcription error, worksheet says 12.4", validity: "pending" },
+      { id: "res-b2-1", targetType: "sample", targetId: "MET26-00003.001", analyteId: "a1", methodId: "m-icpms", methodVersion: 1, value: { kind: "numeric", value: "12.9" }, origin: "manual", worksheetVersion: null, importEventId: null, enteredBy: "analyst@demolab.nl", enteredAt: "2026-06-29T14:00:00.000Z", supersedes: null, supersedeReason: null, validity: "pending", validitySetBy: null, validitySetAt: null, validityReason: null, amendmentCheckRequired: false },
+      { id: "res-b2-2", targetType: "sample", targetId: "MET26-00003.001", analyteId: "a1", methodId: "m-icpms", methodVersion: 1, value: { kind: "numeric", value: "12.4" }, origin: "manual", worksheetVersion: null, importEventId: null, enteredBy: "analyst@demolab.nl", enteredAt: "2026-06-29T16:20:00.000Z", supersedes: "res-b2-1", supersedeReason: "transcription error, worksheet says 12.4", validity: "pending", validitySetBy: null, validitySetAt: null, validityReason: null, amendmentCheckRequired: false },
     ],
     createdAt: "2026-06-28T10:15:00.000Z",
     createdBy: "labmanager@demolab.nl",
@@ -1633,7 +1645,7 @@ function seedDb(): MockDb {
   };
 }
 
-export const mockDb: MockDb = ((globalThis as Record<string, unknown>).__limsMockDbV21 ??=
+export const mockDb: MockDb = ((globalThis as Record<string, unknown>).__limsMockDbV22 ??=
   seedDb()) as MockDb;
 
 export function getOrgSettings(orgId: string): OrgSettings {

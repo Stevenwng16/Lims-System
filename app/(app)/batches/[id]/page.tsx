@@ -46,6 +46,9 @@ export default async function BatchDetailPage({ params }: { params: Promise<{ id
   const importConfigs = (await batchApi.listImportConfigs(actor, detail.record.labId))
     .filter((c) => c.status === "active")
     .map((c) => ({ id: c.id, name: c.name, fileType: c.fileType }));
+  // US-D6: the review view replaces the entry grid once the batch has left
+  // its working phase (awaiting review / completed / voided).
+  const review = detail.record.status === "open" ? null : await batchApi.reviewView(actor, id);
 
   return (
     <div className="mx-auto max-w-4xl space-y-6">
@@ -71,6 +74,7 @@ export default async function BatchDetailPage({ params }: { params: Promise<{ id
         actorEmail={actor.email}
         assignableUsers={assignableUsers}
         importConfigs={importConfigs}
+        review={review}
       />
     </div>
   );

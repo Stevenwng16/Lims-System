@@ -261,6 +261,28 @@ export type ImportResolution =
   | { rowNumber: number; action: "map"; target: ResultTarget }
   | { rowNumber: number; action: "skip"; reason: string };
 
+// ---- US-D6: review & completion ----------------------------------------------
+
+export type ReviewView = {
+  batchStatus: MockBatch["status"];
+  columns: ResultsGrid["columns"];
+  rows: ResultsGrid["rows"];
+  cells: ResultsGrid["cells"];
+  qualifiers: ResultsGrid["qualifiers"]; // for the post-completion replace dialog
+  /** AC 1: `${materialId}:${analyteId}` → the exact lot's expectation ("5.0
+   * ± 0.3 mg/L") or the blank's reporting limit ("< LOQ 0.010") — context for
+   * the HUMAN judgement; no automated verdict until epic E. */
+  qcExpectations: Record<string, string>;
+  /** AC 4: every (sample × analyte) cell without a result — completion is
+   * impossible while any remains unaccounted. */
+  gaps: { targetId: string; label: string; analyteId: string; analyteName: string }[];
+  undecidedCount: number; // current records still pending a decision
+  canReview: boolean;
+  reviewBlockedReason: string | null; // role or AC 2 segregation
+  completeBlockers: string[]; // human-readable gate failures (empty = may complete)
+  amendmentFlagged: boolean; // derived: any record carries the §7.8.8 flag
+};
+
 export type BatchActionResult =
   | { status: "success"; batchId?: string }
   | { status: "error"; message: string };
@@ -401,5 +423,43 @@ export interface BatchApi {
     replaceCells: { rowNumber: number; analyteName: string }[],
     replaceAll: boolean,
     supersedeReason: string,
+  ): Promise<BatchActionResult>;
+
+  // --- US-D6: review & completion (closes the core loop) ---
+
+  reviewView(actor: BatchActor, batchId: string): Promise<ReviewView | null>;
+  /** AC 3: decide one CURRENT result — rejected requires a reason; each
+   * decision is its own attributed status transition + audit event. */
+  setResultValidity(
+    actor: BatchActor,
+    batchId: string,
+    recordId: string,
+    validity: "valid" | "rejected",
+    reason: string,
+  ): Promise<BatchActionResult>;
+  /** AC 3: review-by-exception — every pending result still receives its own
+   * attributed status record and audit event. */
+  validateAllUnflagged(actor: BatchActor, batchId: string): Promise<BatchActionResult>;
+  /** AC 4: explicitly close a sample-cell gap as no-result + reason (the
+   * other route is a set-back, which reopens entry). */
+  closeGapNoResult(
+    actor: BatchActor,
+    batchId: string,
+    target: ResultTarget,
+    analyteId: string,
+    reason: string,
+  ): Promise<BatchActionResult>;
+  /** AC 6: the completion record IS the approval act; final (AC 9). Blocked
+   * while gaps or undecided results remain. */
+  completeBatch(actor: BatchActor, batchId: string): Promise<BatchActionResult>;
+  /** AC 8: post-completion replace — Admin/Lab manager, mandatory reason,
+   * original retained, §7.8.8 "amendment check required" flag raised. */
+  replaceCompletedResult(
+    actor: BatchActor,
+    batchId: string,
+    target: ResultTarget,
+    analyteId: string,
+    input: ResultValueInput,
+    reason: string,
   ): Promise<BatchActionResult>;
 }

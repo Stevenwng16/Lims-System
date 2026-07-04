@@ -1550,7 +1550,331 @@ export const mockBatchApi: BatchApi = {
     mockDb.pendingImports.delete(token); // one-use
     return { status: "success", batchId };
   },
+
+  // ---- US-D6: review & completion ------------------------------------------
+
+  async reviewView(actor, batchId) {
+    const grid = await mockBatchApi.resultsGrid(actor, batchId);
+    const batch = mockDb.batches.get(batchKey(actor.orgId, batchId));
+    if (!grid || !batch) return null;
+    const method = mockDb.methods.get(batch.methodId);
+    if (!method) return null;
+    const pinned = methodVersionByNumber(method, batch.methodVersion);
+    const { gaps, undecided, blockers } = completionState(batch, pinned);
+    const reviewDenied = canReviewBatch(actor, batch);
+    return {
+      batchStatus: batch.status,
+      columns: grid.columns,
+      rows: grid.rows,
+      cells: grid.cells,
+      qualifiers: grid.qualifiers,
+      qcExpectations: qcExpectationsFor(batch, pinned),
+      gaps,
+      undecidedCount: undecided,
+      canReview: reviewDenied === null,
+      reviewBlockedReason: reviewDenied,
+      completeBlockers: blockers,
+      amendmentFlagged: batch.results.some((r) => r.amendmentCheckRequired),
+    };
+  },
+
+  async setResultValidity(actor, batchId, recordId, validity, reason): Promise<BatchActionResult> {
+    const batch = mockDb.batches.get(batchKey(actor.orgId, batchId));
+    if (!batch || batch.orgId !== actor.orgId) return { status: "error", message: "Unknown batch." };
+    if (batch.status !== "awaiting-review") {
+      return { status: "error", message: "Decisions are made during review — this batch is not awaiting review." };
+    }
+    const denied = canReviewBatch(actor, batch);
+    if (denied) return { status: "error", message: denied };
+    if (validity !== "valid" && validity !== "rejected") {
+      return { status: "error", message: "A result is set to valid or rejected." };
+    }
+    const record = batch.results.find((r) => r.id === recordId);
+    if (!record) return { status: "error", message: "Unknown result record." };
+    const current = currentByCell(batch).get(
+      cellKey({ targetType: record.targetType, targetId: record.targetId }, record.analyteId),
+    );
+    if (current?.id !== record.id) {
+      return { status: "error", message: "Only a cell's CURRENT value is decided — this record was superseded." };
+    }
+    if (validity === "rejected" && !reason.trim()) {
+      return { status: "error", message: "Rejecting requires a reason — it anchors the nonconforming-work record (epic E)." };
+    }
+    const method = mockDb.methods.get(batch.methodId);
+    if (!method) return { status: "error", message: "Unknown method." };
+    decideRecord(batch, actor, record, methodVersionByNumber(method, batch.methodVersion), validity, reason.trim() || null);
+    return { status: "success", batchId };
+  },
+
+  async validateAllUnflagged(actor, batchId): Promise<BatchActionResult> {
+    const batch = mockDb.batches.get(batchKey(actor.orgId, batchId));
+    if (!batch || batch.orgId !== actor.orgId) return { status: "error", message: "Unknown batch." };
+    if (batch.status !== "awaiting-review") {
+      return { status: "error", message: "Decisions are made during review — this batch is not awaiting review." };
+    }
+    const denied = canReviewBatch(actor, batch);
+    if (denied) return { status: "error", message: denied };
+    const method = mockDb.methods.get(batch.methodId);
+    if (!method) return { status: "error", message: "Unknown method." };
+    const pinned = methodVersionByNumber(method, batch.methodVersion);
+    // UI convenience only (AC 3): every result gets its OWN attributed status
+    // transition and audit event.
+    let decided = 0;
+    for (const record of currentByCell(batch).values()) {
+      if (record.validity !== "pending") continue;
+      decideRecord(batch, actor, record, pinned, "valid", null);
+      decided += 1;
+    }
+    if (decided === 0) return { status: "error", message: "No pending results — nothing to validate." };
+    return { status: "success", batchId };
+  },
+
+  async closeGapNoResult(actor, batchId, target, analyteId, reason): Promise<BatchActionResult> {
+    const batch = mockDb.batches.get(batchKey(actor.orgId, batchId));
+    if (!batch || batch.orgId !== actor.orgId) return { status: "error", message: "Unknown batch." };
+    if (batch.status !== "awaiting-review") {
+      return { status: "error", message: "Gaps are closed during review — this batch is not awaiting review." };
+    }
+    const denied = canReviewBatch(actor, batch);
+    if (denied) return { status: "error", message: denied };
+    // AC 4 covers (sample × analyte) cells; QC cells are judged by the human
+    // reviewer and formalised in epic E.
+    if (target.targetType !== "sample" || !batch.sampleIds.includes(target.targetId)) {
+      return { status: "error", message: "Gap closure applies to this batch's sample cells." };
+    }
+    const method = mockDb.methods.get(batch.methodId);
+    if (!method) return { status: "error", message: "Unknown method." };
+    const pinned = methodVersionByNumber(method, batch.methodVersion);
+    const analyte = pinned.analytes.find((a) => a.id === analyteId);
+    if (!analyte) return { status: "error", message: "Unknown analyte for this batch's pinned method version." };
+    if (currentByCell(batch).has(cellKey(target, analyteId))) {
+      return { status: "error", message: "This cell already has a value — only empty cells are closed as no-result." };
+    }
+    if (!reason.trim()) return { status: "error", message: "Closing a gap as no-result requires a reason." };
+
+    // The reviewer's explicit closure: a no-result record, decided valid in
+    // the same act (it IS the decision), fully attributed.
+    const record: MockMeasurementRecord = {
+      id: `res-${crypto.randomUUID()}`,
+      targetType: "sample",
+      targetId: target.targetId,
+      analyteId,
+      methodId: batch.methodId,
+      methodVersion: batch.methodVersion,
+      value: { kind: "no-result", reason: reason.trim() },
+      origin: "manual",
+      worksheetVersion: null,
+      importEventId: null,
+      enteredBy: actor.email,
+      enteredAt: new Date().toISOString(),
+      supersedes: null,
+      supersedeReason: null,
+      validity: "valid",
+      validitySetBy: actor.email,
+      validitySetAt: new Date().toISOString(),
+      validityReason: null,
+      amendmentCheckRequired: false,
+    };
+    batch.results.push(record);
+    addEvent(
+      batch,
+      actor,
+      "result-entered",
+      `Result ${target.targetId} · ${analyte.name}: no result — ${reason.trim()} (gap closed at review)`,
+    );
+    return { status: "success", batchId };
+  },
+
+  async completeBatch(actor, batchId): Promise<BatchActionResult> {
+    const batch = mockDb.batches.get(batchKey(actor.orgId, batchId));
+    if (!batch || batch.orgId !== actor.orgId) return { status: "error", message: "Unknown batch." };
+    if (batch.status !== "awaiting-review") {
+      return { status: "error", message: "Only a batch awaiting review can be completed." };
+    }
+    const denied = canReviewBatch(actor, batch);
+    if (denied) return { status: "error", message: denied };
+    const method = mockDb.methods.get(batch.methodId);
+    if (!method) return { status: "error", message: "Unknown method." };
+    const pinned = methodVersionByNumber(method, batch.methodVersion);
+    const { blockers } = completionState(batch, pinned);
+    if (blockers.length > 0) {
+      return { status: "error", message: `Completion blocked: ${blockers.join("; ")}.` };
+    }
+    const current = [...currentByCell(batch).values()];
+    const valid = current.filter((r) => r.validity === "valid").length;
+    const rejected = current.filter((r) => r.validity === "rejected").length;
+    // AC 6/9: the completion record IS the approval act, and it is final —
+    // corrections go through AC 8, a structural redo is a NEW batch. The
+    // sample/job status cascade needs no code: it is all derived views.
+    batch.status = "completed";
+    addEvent(
+      batch,
+      actor,
+      "batch-completed",
+      `Batch completed — ${valid} result(s) valid, ${rejected} rejected (review approval)`,
+    );
+    return { status: "success", batchId };
+  },
+
+  async replaceCompletedResult(actor, batchId, target, analyteId, input, reason): Promise<BatchActionResult> {
+    const batch = mockDb.batches.get(batchKey(actor.orgId, batchId));
+    if (!batch || batch.orgId !== actor.orgId) return { status: "error", message: "Unknown batch." };
+    if (batch.status !== "completed") {
+      return { status: "error", message: "Post-completion replacement applies to completed batches only." };
+    }
+    const denied = canReviewBatch(actor, batch); // AC 8 authorization incl. segregation
+    if (denied) return { status: "error", message: denied };
+    if (!reason.trim()) {
+      return { status: "error", message: "A post-completion replacement requires a reason (§7.8.8)." };
+    }
+    const method = mockDb.methods.get(batch.methodId);
+    if (!method) return { status: "error", message: "Unknown method." };
+    const pinned = methodVersionByNumber(method, batch.methodVersion);
+    const targetError = validateTarget(batch, pinned, target, analyteId);
+    if (targetError) return { status: "error", message: targetError };
+    const validated = validateResultInput(batch.orgId, input);
+    if ("error" in validated) return { status: "error", message: validated.error };
+    const existing = currentByCell(batch).get(cellKey(target, analyteId));
+    if (!existing) {
+      return { status: "error", message: "This cell holds no value to replace." };
+    }
+
+    const analyteName = pinned.analytes.find((a) => a.id === analyteId)?.name ?? analyteId;
+    const record: MockMeasurementRecord = {
+      id: `res-${crypto.randomUUID()}`,
+      targetType: target.targetType,
+      targetId: target.targetId,
+      analyteId,
+      methodId: batch.methodId,
+      methodVersion: batch.methodVersion,
+      value: validated.value,
+      origin: "manual",
+      worksheetVersion: null,
+      importEventId: null,
+      enteredBy: actor.email,
+      enteredAt: new Date().toISOString(),
+      supersedes: existing.id,
+      supersedeReason: reason.trim(),
+      // The replacing manager's act is the decision; the original stays
+      // visible with its own status.
+      validity: "valid",
+      validitySetBy: actor.email,
+      validitySetAt: new Date().toISOString(),
+      validityReason: null,
+      // AC 8 §7.8.8 trigger — conservative in the MVP: EVERY post-completion
+      // replacement flags "amendment check required"; epic F refines this to
+      // actual issued-report linkage and consumes it.
+      amendmentCheckRequired: true,
+    };
+    batch.results.push(record);
+    addEvent(
+      batch,
+      actor,
+      "result-superseded",
+      `Post-completion replacement ${rowLabelFor(batch, target)} · ${analyteName}: ${resultDisplay(existing.value)} → ${resultDisplay(validated.value)} — ${reason.trim()} · report impact: amendment check required (§7.8.8)`,
+    );
+    return { status: "success", batchId };
+  },
 };
+
+// ---- US-D6: review & completion ---------------------------------------------
+
+/** AC 2: Admin/Lab manager — and when the per-lab segregation setting is on,
+ * a participant (completed a step, entered or imported any result) cannot
+ * review, complete or post-completion-replace. Enforced server-side. */
+function canReviewBatch(actor: BatchActor, batch: MockBatch): string | null {
+  const denied = canManageBatch(actor, batch.labId);
+  if (denied) return denied;
+  const lab = mockDb.labs.get(batch.labId);
+  if (lab?.reviewerMustDiffer) {
+    const participated =
+      batch.events.some((e) => e.type === "step-completed" && e.by === actor.email) ||
+      batch.results.some((r) => r.enteredBy === actor.email);
+    if (participated) {
+      return "This lab requires the reviewer to differ from the performing analyst(s) — you completed steps or entered results on this batch (per-lab setting, US-A7).";
+    }
+  }
+  return null;
+}
+
+/** AC 1: the exact lot's expectation per QC cell (US-B2 AC 3), or the blank's
+ * reporting limit — context for the HUMAN judgement; no verdict until epic E. */
+function qcExpectationsFor(batch: MockBatch, pinned: MethodVersion): Record<string, string> {
+  const out: Record<string, string> = {};
+  for (const entry of batch.qc) {
+    const material = mockDb.qcMaterials.get(entry.materialId);
+    if (!material) continue;
+    for (const analyte of pinned.analytes) {
+      const key = `${entry.materialId}:${analyte.id}`;
+      if (material.type === "blank") {
+        out[key] = analyte.loq
+          ? `expected < LOQ (${analyte.loq}${analyte.unit ? ` ${analyte.unit}` : ""})`
+          : "expected below reporting limit (no LOQ set on this analyte)";
+        continue;
+      }
+      const expected = material.expectedValues.find(
+        (v) =>
+          v.analyteName.trim().toLowerCase() === analyte.name.trim().toLowerCase() &&
+          (v.unit?.trim().toLowerCase() ?? null) === (analyte.unit?.trim().toLowerCase() ?? null),
+      );
+      if (expected) {
+        const tolerance =
+          expected.tolerance.kind === "percent"
+            ? `±${expected.tolerance.value}%`
+            : `±${expected.tolerance.value}${analyte.unit ? ` ${analyte.unit}` : ""}`;
+        out[key] = `expected ${expected.expectedValue}${analyte.unit ? ` ${analyte.unit}` : ""} ${tolerance} (lot ${material.lotNumber})`;
+      }
+    }
+  }
+  return out;
+}
+
+/** AC 4/6 — the completion gate: no unaccounted sample-cell gap, no current
+ * record still pending. A current REJECTED value stands as rejected-with-
+ * reason (AC 5); superseded records are history and never block. */
+function completionState(batch: MockBatch, pinned: MethodVersion) {
+  const current = currentByCell(batch);
+  const gaps: { targetId: string; label: string; analyteId: string; analyteName: string }[] = [];
+  for (const sampleId of batch.sampleIds) {
+    for (const analyte of pinned.analytes) {
+      if (!current.has(`sample:${sampleId}:${analyte.id}`)) {
+        gaps.push({ targetId: sampleId, label: sampleId, analyteId: analyte.id, analyteName: analyte.name });
+      }
+    }
+  }
+  let undecided = 0;
+  for (const record of current.values()) {
+    if (record.validity === "pending") undecided += 1;
+  }
+  const blockers: string[] = [];
+  if (gaps.length > 0) {
+    blockers.push(`${gaps.length} sample cell(s) without a result — fill via set-back or close as no-result + reason`);
+  }
+  if (undecided > 0) blockers.push(`${undecided} result(s) still awaiting a valid/rejected decision`);
+  return { gaps, undecided, blockers };
+}
+
+function decideRecord(
+  batch: MockBatch,
+  actor: BatchActor,
+  record: MockMeasurementRecord,
+  pinned: MethodVersion,
+  validity: "valid" | "rejected",
+  reason: string | null,
+): void {
+  record.validity = validity;
+  record.validitySetBy = actor.email;
+  record.validitySetAt = new Date().toISOString();
+  record.validityReason = validity === "rejected" ? reason : null;
+  const analyteName = pinned.analytes.find((a) => a.id === record.analyteId)?.name ?? record.analyteId;
+  const rowLabel = rowLabelFor(batch, { targetType: record.targetType, targetId: record.targetId });
+  addEvent(
+    batch,
+    actor,
+    "result-validity",
+    `Result ${rowLabel} · ${analyteName} (${resultDisplay(record.value)}): ${validity}${validity === "rejected" ? ` — ${reason}` : ""}`,
+  );
+}
 
 // ---- US-D5: instrument import ----------------------------------------------
 
@@ -1990,6 +2314,10 @@ function appendRecord(
     supersedes: supersedes?.id ?? null,
     supersedeReason,
     validity: "pending", // US-D6 owns the transition
+    validitySetBy: null,
+    validitySetAt: null,
+    validityReason: null,
+    amendmentCheckRequired: false,
   };
   batch.results.push(record); // append-only — nothing is ever altered
   addEvent(

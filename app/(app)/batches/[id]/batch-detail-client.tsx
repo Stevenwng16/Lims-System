@@ -3,8 +3,9 @@
 import Link from "next/link";
 import { useEffect, useState } from "react";
 import { useActionState } from "react";
-import type { BatchDetail, ResultsGrid, StepRailEntry } from "@/lib/batches";
+import type { BatchDetail, ResultsGrid, ReviewView, StepRailEntry } from "@/lib/batches";
 import { ResultsGridSection } from "./results-grid";
+import { ReviewPanel } from "./review-panel";
 import type { ImportConfigOption } from "./import-dialog";
 import {
   assignBatchAction,
@@ -594,6 +595,7 @@ export function BatchDetailClient({
   actorEmail,
   assignableUsers,
   importConfigs,
+  review,
 }: {
   detail: BatchDetail;
   grid: ResultsGrid | null;
@@ -605,6 +607,7 @@ export function BatchDetailClient({
   actorEmail: string;
   assignableUsers: { email: string; name: string }[];
   importConfigs: ImportConfigOption[];
+  review: ReviewView | null;
 }) {
   const [dialog, setDialog] = useState<DialogState>(null);
   const close = () => setDialog(null);
@@ -633,6 +636,11 @@ export function BatchDetailClient({
           <span className="text-muted-foreground">·</span>
           <BatchStatusBadge status={batch.status} />
           <span className="text-sm">{detail.statusLabel}</span>
+          {batch.results.some((r) => r.amendmentCheckRequired) && (
+            <Badge variant="destructive" title="A result was replaced after completion (§7.8.8)">
+              ⚠ amendment check required
+            </Badge>
+          )}
         </div>
         <div className="mt-2 flex flex-wrap items-center gap-x-3 gap-y-1 text-sm text-muted-foreground">
           <span>
@@ -862,9 +870,11 @@ export function BatchDetailClient({
           </Card>
         </TabsContent>
 
-        {/* Results (US-D4) — the manual entry grid on the ADR-2 record model. */}
+        {/* Results: US-D4 entry grid while working; US-D6 review view after. */}
         <TabsContent value="results" className="mt-4">
-          {grid ? (
+          {batch.status !== "open" && review ? (
+            <ReviewPanel batchId={batch.id} view={review} />
+          ) : grid ? (
             <ResultsGridSection
               batchId={batch.id}
               grid={grid}
