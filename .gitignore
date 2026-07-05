@@ -30,8 +30,14 @@ yarn-debug.log*
 yarn-error.log*
 .pnpm-debug.log*
 
-# env files (can opt-in for committing if needed)
+# env files: the app's root .env.local is deliberately committed so the team
+# connects to Supabase on a fresh clone (anon key only — it is the publishable
+# client key; never put the service_role key, DB password or access tokens in
+# it). All other env files stay ignored: lims-supabase/.env.local carries a
+# personal Supabase access token.
 .env*
+!/.env.local
+!/.env.local.example
 
 # vercel
 .vercel
