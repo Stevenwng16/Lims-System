@@ -86,6 +86,9 @@ export type MethodLinkView = {
   methodName: string; // resolved against the CURRENT method version
   methodStatus: "active" | "inactive";
   stepName: string | null; // null for a method-level link or a stale step id
+  /** False when the method now belongs to another lab (a lab move stranded
+   * the link) — stale for gating and badged as such in every view. */
+  sameLab: boolean;
 };
 
 export type EquipmentDetail = {

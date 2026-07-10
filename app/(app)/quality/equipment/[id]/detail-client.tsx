@@ -138,13 +138,16 @@ function EditEquipmentDialog({
             </div>
             <div className="space-y-2">
               <Label htmlFor="eqe-asset">Equipment ID</Label>
+              {/* Fixed once created: the ID names the physical asset and is
+                  never changed or reissued — the server rejects any change
+                  (review fix, pass 2). */}
               <Input
                 id="eqe-asset"
                 name="assetId"
-                defaultValue={v?.assetId ?? eq.assetId}
-                required
-                maxLength={32}
-                className="w-40 font-mono"
+                defaultValue={eq.assetId}
+                readOnly
+                className="w-40 bg-muted font-mono"
+                title="The equipment ID is fixed once created — it names the physical asset."
               />
             </div>
             <div className="space-y-2">
@@ -656,6 +659,9 @@ function LinksDialog({
                   {l.methodName}
                   {l.stepId ? ` → ${l.stepName ?? "(step removed)"}` : ""}
                   {l.methodStatus === "inactive" && <Badge variant="secondary">inactive</Badge>}
+                  {l.methodStatus === "active" && !l.sameLab && (
+                    <Badge variant="secondary">moved — other lab</Badge>
+                  )}
                 </label>
               ))}
             </div>
@@ -1134,6 +1140,12 @@ export function EquipmentDetailClient({
                         {l.stepId ? ` → ${l.stepName ?? "(step removed from current version)"}` : " (whole method)"}
                       </span>
                       {l.methodStatus === "inactive" && <Badge variant="secondary">inactive</Badge>}
+                      {/* stale after a lab move: the same state the edit dialog
+                          already flags — the read-only view must agree
+                          (review fix, pass 2) */}
+                      {l.methodStatus === "active" && !l.sameLab && (
+                        <Badge variant="secondary">moved — other lab</Badge>
+                      )}
                     </li>
                   ))}
                 </ul>

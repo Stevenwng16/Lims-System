@@ -301,19 +301,21 @@ function EditCompositionDialog({
     if (state.success) onDone();
   }, [state, onDone]);
 
-  type Row = { id: string; label: string; requested: boolean; member: boolean };
+  type Row = { id: string; label: string; requested: boolean; member: boolean; voided: boolean };
   const rows: Row[] = [
     ...detail.samples.map((s) => ({
       id: s.id,
       label: `${s.typeName} — ${s.customer} — ${s.description}`,
       requested: s.requested,
       member: true,
+      voided: s.voided, // voided member: visible so it can be unchecked
     })),
     ...detail.addableSamples.map((s) => ({
       id: s.id,
       label: `${s.typeName} — ${s.customer} — ${s.description}`,
       requested: s.requested,
       member: false,
+      voided: false, // eligibility already excludes voided samples
     })),
   ];
 
@@ -362,6 +364,8 @@ function EditCompositionDialog({
                 <span className="w-44 shrink-0 font-mono text-xs">{row.id}</span>
                 <span className="min-w-0 flex-1 truncate text-muted-foreground">{row.label}</span>
                 {!row.requested && <Badge variant="secondary">not requested</Badge>}
+                {/* the server refuses to KEEP a voided member — name the fix */}
+                {row.voided && <Badge variant="destructive">voided — uncheck to remove</Badge>}
               </label>
             ))}
           </fieldset>
@@ -388,6 +392,8 @@ function EditCompositionDialog({
                 <span className="min-w-0 flex-1 truncate">
                   {o.name} <span className="text-muted-foreground">({o.typeLabel})</span>
                 </span>
+                {/* expired/deactivated since creation: keep, reduce or remove only */}
+                {o.heldOnly && <Badge variant="secondary">no longer offered</Badge>}
                 {qc.has(o.materialId) && (
                   <Input
                     type="number"
@@ -726,8 +732,18 @@ export function BatchDetailClient({
                 </TableHeader>
                 <TableBody>
                   {detail.samples.map((s) => (
-                    <TableRow key={s.id}>
-                      <TableCell className="font-mono text-sm">{s.id}</TableCell>
+                    // A member voided from the job side renders muted with a
+                    // badge — the batch page and job page must tell the same
+                    // story about the same sample (review fix, pass 2).
+                    <TableRow key={s.id} className={s.voided ? "opacity-60" : undefined}>
+                      <TableCell className="font-mono text-sm">
+                        {s.id}
+                        {s.voided && (
+                          <Badge variant="destructive" className="ml-2">
+                            voided
+                          </Badge>
+                        )}
+                      </TableCell>
                       <TableCell>
                         {s.jobId ? (
                           <Link href={`/jobs/${s.jobId}`} className="text-primary underline-offset-4 hover:underline">

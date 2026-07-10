@@ -7,7 +7,7 @@ import {
   type MockSample,
   type SampleAcceptance,
 } from "@/lib/mock-db";
-import { sampleStatus } from "@/lib/batches/progress";
+import { openBatchOfMethodContaining, sampleStatus } from "@/lib/batches/progress";
 import { generateJobNumber, generateSampleId } from "./ids";
 import type {
   JobActionResult,
@@ -352,6 +352,21 @@ export const mockJobApi: JobApi = {
           methodIds: existing.requestedMethodIds,
         });
         if (error) return { status: "error", message: error };
+        // A requested method cannot be REMOVED while the sample sits in an
+        // open batch of it — mirror of the acceptance freeze below. US-D1
+        // AC 5 makes membership-implies-requested an invariant the batch
+        // layer maintains and relies on; un-requesting mid-run would strand
+        // the member and falsify job completeness (review fix, pass 2).
+        for (const methodId of existing.requestedMethodIds) {
+          if (s.requestedMethodIds.includes(methodId)) continue;
+          const openBatch = openBatchOfMethodContaining(actor.orgId, existing.id, methodId);
+          if (openBatch) {
+            return {
+              status: "error",
+              message: `Sample ${existing.id} is in open batch ${openBatch.id} for one of its requested methods — that method cannot be removed while the batch runs (void the batch or remove the sample from its composition first).`,
+            };
+          }
+        }
       } else {
         const error = validateSample(actor.orgId, job.labId, s);
         if (error) return { status: "error", message: error };

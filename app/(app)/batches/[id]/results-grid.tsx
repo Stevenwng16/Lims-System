@@ -527,6 +527,13 @@ export function ResultsGridSection({
                         QC
                       </Badge>
                     )}
+                    {/* voided from the job side after batching — the analyst
+                        must see it while entering results (review fix, pass 2) */}
+                    {row.voided && (
+                      <Badge variant="destructive" className="ml-2">
+                        voided
+                      </Badge>
+                    )}
                     <p className="max-w-44 truncate text-xs text-muted-foreground">{row.sub}</p>
                   </TableCell>
                   {grid.columns.map((column, columnIndex) => {

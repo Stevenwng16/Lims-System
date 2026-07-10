@@ -642,6 +642,10 @@ export type MockDb = {
       actorEmail: string;
       batchId: string;
       configId: string;
+      // The configuration EXACTLY as previewed: confirm refuses when the live
+      // config no longer matches, so what is applied is provably what the
+      // user saw (US-D5 AC 3 — review fix, pass 2).
+      configJson: string;
       fileName: string;
       bytes: Uint8Array;
       createdAt: number;

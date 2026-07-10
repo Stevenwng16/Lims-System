@@ -372,6 +372,10 @@ export const mockEquipmentApi: EquipmentApi = {
         stepName: link.stepId
           ? (current?.steps.find((s) => s.id === link.stepId)?.name ?? null)
           : null,
+        // A held link whose method (or this equipment) moved lab is stale for
+        // gating — the read-only Methods tab must show that, not just the
+        // manager's edit dialog (review fix, pass 2).
+        sameLab: current !== null && current.labId === eq.labId,
       };
     });
 
@@ -433,16 +437,28 @@ export const mockEquipmentApi: EquipmentApi = {
     if (!eq) return { status: "error", message: "Unknown equipment." };
     const denied = canManage(actor, eq.labId) ?? canManage(actor, input.labId);
     if (denied) return { status: "error", message: denied };
+    // The asset ID is IMMUTABLE once issued: it names a physical asset and is
+    // never changed or reissued (decision 3 Jul 2026). An editable ID would
+    // let a rename free the old tag for a different asset — the exact reissue
+    // the cross-active-and-inactive uniqueness rule exists to prevent
+    // (review fix, pass 2). A genuinely mistyped tag means deactivate + create.
+    if (input.assetId.trim() !== eq.assetId) {
+      return {
+        status: "error",
+        message:
+          "The equipment ID is fixed once created — it names the physical asset and is never changed or reissued. For a wrong tag: deactivate this record and create a new one.",
+      };
+    }
     const error = validateEquipmentInput(actor, input, equipmentId, eq);
     if (error) return { status: "error", message: error };
 
     // Before/after per changed field (AC 14) — names resolved for readability.
+    // The asset ID is not tracked: the guard above makes it unchangeable.
     const changes: string[] = [];
     const track = (label: string, before: string, after: string) => {
       if (before !== after) changes.push(`${label}: "${before}" → "${after}"`);
     };
     track("name", eq.name, input.name.trim());
-    track("ID", eq.assetId, input.assetId.trim());
     track(
       "type",
       mockDb.equipmentTypes.get(eq.typeId)?.name ?? eq.typeId,
@@ -844,9 +860,13 @@ export const mockEquipmentApi: EquipmentApi = {
  * on, with its LIVE availability — a step requiring a piece of equipment
  * cannot be completed while that equipment is Blocked (enforced in epic D). A
  * method-level link (stepId null) applies to every step of the method.
+ * Lab-scoped like the enforced gate (US-D3 AC 4 "from that lab's items"):
+ * links stranded by a lab move never feed another lab's gating pool
+ * (review fix, pass 2).
  */
 export function equipmentForMethodStep(
   orgId: string,
+  labId: string,
   methodId: string,
   stepId: string,
 ): { equipment: MockEquipment; availability: Availability }[] {
@@ -855,6 +875,7 @@ export function equipmentForMethodStep(
     .filter(
       (eq) =>
         eq.orgId === orgId &&
+        eq.labId === labId &&
         eq.status === "active" &&
         eq.methodLinks.some((l) => l.methodId === methodId && (l.stepId === null || l.stepId === stepId)),
     )

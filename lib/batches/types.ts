@@ -62,6 +62,10 @@ export type MethodBatchOptions = {
     typeLabel: string;
     lotNumber: string;
     expiryDate: string;
+    /** True for an entry the batch already holds whose material is no longer
+     * offered (expired/deactivated) — shown so it can be removed; the server
+     * only allows keeping/reducing/removing it, never increasing. */
+    heldOnly?: boolean;
   }[];
 };
 
@@ -131,6 +135,9 @@ export type BatchDetail = {
     description: string;
     acceptance: SampleAcceptance | null;
     requested: boolean;
+    /** Sample (or its whole job) voided AFTER entering the batch — the batch
+     * views must show it, like the job page does. */
+    voided: boolean;
   }[];
   qc: {
     materialId: string;
@@ -188,6 +195,7 @@ export type ResultsGrid = {
     targetId: string;
     label: string; // sample ID, or "BLK ×2"
     sub: string; // customer/description, or material name + lot
+    voided?: boolean; // sample/job voided after batching — flagged in grid & review
   }[];
   /** Keyed `${targetType}:${targetId}:${analyteId}`. */
   cells: Record<string, GridCell>;

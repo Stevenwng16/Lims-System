@@ -28,17 +28,27 @@ export function sampleMethodProgress(
   sampleId: string,
   methodId: string,
 ): MethodProgress {
+  // Review fix (pass 2): an OPEN batch of the method outranks an earlier
+  // completed one — a structural redo ("a redo is a NEW batch", US-D6) must
+  // read as in-batch/in-progress while it runs, not "completed" (US-D1 AC 4
+  // "In progress (in ≥1 open batch)" / AC 9). "completed" only stands when no
+  // open batch of the method still holds the sample.
+  let sawCompleted = false;
   let progress: MethodProgress = "received";
   for (const batch of batchesContaining(orgId, sampleId)) {
     if (batch.methodId !== methodId) continue;
-    if (batch.status === "completed") return "completed";
+    if (batch.status === "completed") {
+      sawCompleted = true;
+      continue;
+    }
     // Open batch: work started ⇔ the one-way latch has flipped (first step
     // advance or first recorded work, US-D3/D4) — same fact that locks
     // composition, so the two can never disagree.
     if (batch.compositionLatched || batch.currentStepIndex > 0) progress = "in-progress";
     else if (progress === "received") progress = "in-batch";
   }
-  return progress;
+  if (progress !== "received") return progress;
+  return sawCompleted ? "completed" : "received";
 }
 
 /**

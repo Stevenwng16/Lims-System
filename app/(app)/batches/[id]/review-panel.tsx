@@ -430,6 +430,13 @@ export function ReviewPanel({ batchId, view }: { batchId: string; view: ReviewVi
                         QC
                       </Badge>
                     )}
+                    {/* voided from the job side after batching — the reviewer
+                        must see it before validating (review fix, pass 2) */}
+                    {row.voided && (
+                      <Badge variant="destructive" className="ml-2">
+                        voided
+                      </Badge>
+                    )}
                     <p className="max-w-44 truncate text-xs text-muted-foreground">{row.sub}</p>
                   </TableCell>
                   {view.columns.map((column) => {

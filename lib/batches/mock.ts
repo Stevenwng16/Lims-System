@@ -158,6 +158,23 @@ function qcPositions(batch: { qc: { quantity: number }[] }): number {
   return batch.qc.reduce((sum, entry) => sum + entry.quantity, 0);
 }
 
+/** US-D1 AC 10 "no results, no uploads": recorded work, independent of the
+ * latch flag. Used belt-and-braces next to `compositionLatched` so composition
+ * can never reopen even if a write path misses the flag (review fix, pass 2). */
+function hasRecordedWork(batch: MockBatch): boolean {
+  return batch.results.length > 0 || batch.worksheets.length > 0 || batch.imports.length > 0;
+}
+
+/** "BLK×2, CS1×1" — the QC set by material code, for audit-event summaries
+ * (invariant 1 needs the before/after state reconstructable from the log). */
+function qcSetLabel(qc: { materialId: string; quantity: number }[]): string {
+  return (
+    qc
+      .map((e) => `${mockDb.qcMaterials.get(e.materialId)?.code ?? e.materialId}×${e.quantity}`)
+      .join(", ") || "none"
+  );
+}
+
 function addEvent(
   batch: MockBatch,
   actor: BatchActor,
@@ -336,7 +353,11 @@ type ValidatedComposition = {
 };
 
 /** AC 3/5/6/7/12 — shared by create and the open-window edit. Validates
- * EVERYTHING before anything mutates (validate-before-mutate). */
+ * EVERYTHING before anything mutates (validate-before-mutate). `held` is the
+ * batch's CURRENT composition on the edit path (absent on create): existing
+ * members and QC entries are grandfathered where the ACs scope a rule to
+ * ADDING, so an edit can never dead-end on state that was valid at creation
+ * (review fixes, pass 2). */
 function validateComposition(
   orgId: string,
   labId: string,
@@ -344,9 +365,13 @@ function validateComposition(
   pinned: MethodVersion,
   input: BatchCompositionInput,
   excludeBatchId?: string,
+  held?: { sampleIds: string[]; qc: { materialId: string; quantity: number }[] },
 ): { error: string } | ValidatedComposition {
   const sampleIds = [...new Set(input.sampleIds)];
   if (sampleIds.length < 1) return { error: "A batch needs at least one sample." };
+
+  const heldSamples = new Set(held?.sampleIds ?? []);
+  const heldQc = new Map((held?.qc ?? []).map((e) => [e.materialId, e.quantity] as const));
 
   const confirmed = new Set(input.confirmAddMethod);
   const toConfirm: string[] = [];
@@ -355,8 +380,12 @@ function validateComposition(
     if (error) return { error };
     const { sample } = findSample(orgId, sampleId)!;
     if (!sample.requestedMethodIds.includes(methodId)) {
-      // AC 5: possible only after explicit confirmation, which records the
-      // method onto the sample's requested list.
+      // AC 5 scopes the explicit confirmation to ADDING a sample. A sample
+      // already in the batch is exempt: its confirmation was recorded when it
+      // entered (and un-requesting a method is blocked while the sample sits
+      // in an open batch of it — lib/jobs/mock.ts), so demanding a fresh
+      // confirmation here would dead-end edits that don't touch the sample.
+      if (heldSamples.has(sampleId)) continue;
       if (!confirmed.has(sampleId)) {
         return {
           error: `Sample ${sampleId} does not request this method — confirm adding the method to the sample first.`,
@@ -375,7 +404,19 @@ function validateComposition(
     }
     seenQc.add(entry.materialId);
     if (!allowedQc.has(entry.materialId)) {
-      return { error: "A selected QC material is not available for this method (inactive, expired, other lab, or no covered analyte)." };
+      // AC 7 governs what the picker OFFERS for adding; an entry the batch
+      // already holds (pinned at its lot, US-B2 AC 7) may be kept as-is,
+      // reduced or removed even after its material expired or was
+      // deactivated — otherwise the stale entry would block every edit in
+      // the still-open AC 10 window. Only adding or increasing requires
+      // current eligibility.
+      const heldQty = heldQc.get(entry.materialId);
+      if (heldQty === undefined) {
+        return { error: "A selected QC material is not available for this method (inactive, expired, other lab, or no covered analyte)." };
+      }
+      if (entry.quantity > heldQty) {
+        return { error: "This QC material is no longer available (inactive or expired) — its entry can be kept, reduced or removed, but not increased." };
+      }
     }
     if (!Number.isInteger(entry.quantity) || entry.quantity < 1 || entry.quantity > 99) {
       return { error: "QC quantity must be a whole number between 1 and 99." };
@@ -530,7 +571,12 @@ export const mockBatchApi: BatchApi = {
     const typeNames = new Map(getOrgSettings(actor.orgId).sampleTypes.map((t) => [t.id, t.name] as const));
 
     const compositionOpen =
-      batch.status === "open" && !batch.compositionLatched && batch.currentStepIndex === 0;
+      batch.status === "open" &&
+      !batch.compositionLatched &&
+      batch.currentStepIndex === 0 &&
+      // Belt-and-braces on the AC 10 facts themselves: recorded work closes
+      // the window even if a write path missed flipping the latch flag.
+      !hasRecordedWork(batch);
 
     return {
       record: batch,
@@ -549,6 +595,10 @@ export const mockBatchApi: BatchApi = {
           description: found?.sample.description ?? "",
           acceptance: found?.sample.acceptance ?? null,
           requested: found?.sample.requestedMethodIds.includes(batch.methodId) ?? false,
+          // Surfaced so the batch page never presents a voided sample as a
+          // normal live member while the job page shows it voided (the two
+          // views must agree — review fix, pass 2).
+          voided: found ? found.sample.voided || found.job.voided : false,
         };
       }),
       qc: batch.qc.map((entry) => {
@@ -569,7 +619,29 @@ export const mockBatchApi: BatchApi = {
             (s) => !batch.sampleIds.includes(s.id),
           )
         : [],
-      qcOptions: compositionOpen ? qcOptionsFor(actor.orgId, batch.labId, pinned) : [],
+      // The dialog must also SHOW entries whose material is no longer offered
+      // (expired/deactivated since creation) — otherwise they could be neither
+      // seen nor removed while still blocking the save (review fix, pass 2).
+      qcOptions: compositionOpen
+        ? (() => {
+            const options = [...qcOptionsFor(actor.orgId, batch.labId, pinned)];
+            const offered = new Set(options.map((o) => o.materialId));
+            for (const entry of batch.qc) {
+              if (offered.has(entry.materialId)) continue;
+              const material = mockDb.qcMaterials.get(entry.materialId);
+              options.push({
+                materialId: entry.materialId,
+                code: material?.code ?? entry.materialId,
+                name: material?.name ?? "",
+                typeLabel: material ? QC_TYPE_LABELS[material.type] : "",
+                lotNumber: material?.lotNumber ?? "",
+                expiryDate: material?.expiryDate ?? "",
+                heldOnly: true,
+              });
+            }
+            return options;
+          })()
+        : [],
       assignee: batch.assignee,
       assigneeName: userName(batch.assignee),
       statusLabel: statusLabelFor(batch, pinned),
@@ -586,6 +658,10 @@ export const mockBatchApi: BatchApi = {
   },
 
   async creationOptions(actor, labId): Promise<MethodBatchOptions[]> {
+    // Lab scope is checked HERE, not left to the caller: this read returns
+    // sample and customer data, and every function on this API validates its
+    // own labId parameter (invariant 4 — review fix, pass 2).
+    if (!canSeeLab(actor, labId)) return [];
     const out: MethodBatchOptions[] = [];
     for (const method of mockDb.methods.values()) {
       if (method.orgId !== actor.orgId || method.status !== "active") continue;
@@ -666,11 +742,15 @@ export const mockBatchApi: BatchApi = {
       createdBy: actor.email,
     };
     mockDb.batches.set(batchKey(actor.orgId, batchNumber), batch);
+    // The created event names the FULL composition (sample ids + QC set), not
+    // just counts: it is the anchor the composition-changed deltas chain back
+    // to, so the state before the first edit stays reconstructable from the
+    // log alone (invariant 1 — review fix, pass 2).
     addEvent(
       batch,
       actor,
       "created",
-      `Batch created: ${validated.sampleIds.length} sample(s) + ${qcPositions(batch)} QC position(s), ${methodLabel(pinned)} v${pinned.version} pinned`,
+      `Batch created: ${validated.sampleIds.length} sample(s) (${validated.sampleIds.join(", ")}) + ${qcPositions(batch)} QC position(s) (${qcSetLabel(batch.qc)}), ${methodLabel(pinned)} v${pinned.version} pinned`,
     );
     applyConfirmedMethods(actor, batch, validated.toConfirm);
     generateWorkingCopy(actor, batch, pinned);
@@ -688,13 +768,15 @@ export const mockBatchApi: BatchApi = {
     const denied = canComposeBatch(actor, batch.labId, batch.methodId);
     if (denied) return { status: "error", message: denied };
 
-    // AC 10 — the one-way latch. Checked on ALL THREE facts so a set-back
+    // AC 10 — the one-way latch. Checked on ALL FOUR facts so a set-back
     // (step index back at 0) can never reopen composition: the latch flag
-    // itself is never reset by any code path (hard-never list).
+    // itself is never reset by any code path (hard-never list), and recorded
+    // work (results, worksheets, imports) closes the window even if a write
+    // path missed flipping the flag (review fix, pass 2).
     if (batch.status !== "open") {
       return { status: "error", message: "Only open batches can be edited." };
     }
-    if (batch.compositionLatched || batch.currentStepIndex > 0) {
+    if (batch.compositionLatched || batch.currentStepIndex > 0 || hasRecordedWork(batch)) {
       return {
         status: "error",
         message:
@@ -714,6 +796,9 @@ export const mockBatchApi: BatchApi = {
       pinned,
       input,
       batch.id,
+      // The current composition: members and held QC entries are grandfathered
+      // where the ACs scope a rule to ADDING (review fixes, pass 2).
+      { sampleIds: batch.sampleIds, qc: batch.qc },
     );
     if ("error" in validated) return { status: "error", message: validated.error };
 
@@ -726,6 +811,7 @@ export const mockBatchApi: BatchApi = {
     const qcChanged =
       qcBefore.size !== qcAfter.size ||
       [...qcAfter].some(([id, quantity]) => qcBefore.get(id) !== quantity);
+    const qcWas = qcSetLabel(batch.qc); // captured BEFORE the mutation below
 
     batch.sampleIds = validated.sampleIds;
     batch.qc = validated.qc;
@@ -737,9 +823,10 @@ export const mockBatchApi: BatchApi = {
         // Removal in the open window returns the sample's per-method state to
         // Received — automatically, because the state is derived (AC 10).
         removed.length ? `removed ${removed.join(", ")}` : null,
-        qcChanged
-          ? `QC set now: ${validated.qc.map((e) => `${mockDb.qcMaterials.get(e.materialId)?.code ?? e.materialId}×${e.quantity}`).join(", ") || "none"}`
-          : null,
+        // Before AND after (invariant 1) — the QC set has no add/remove
+        // deltas, so without "was" the pre-edit state would be unrecoverable
+        // from the log (review fix, pass 2).
+        qcChanged ? `QC set was: ${qcWas} → now: ${qcSetLabel(validated.qc)}` : null,
       ].filter(Boolean);
       addEvent(batch, actor, "composition-changed", parts.join("; "));
       // Keep the downloadable working copy truthful to the composition.
@@ -956,6 +1043,10 @@ export const mockBatchApi: BatchApi = {
       uploadedAt: new Date().toISOString(),
       uploadedBy: actor.email,
     };
+    // An upload IS recorded work: it flips the one-way composition latch
+    // (US-D1 AC 10 "no results, no uploads") — previously only a step advance
+    // did, leaving composition editable after work existed (review fix, pass 2).
+    batch.compositionLatched = true;
     batch.worksheets.push(attachment);
     mockDb.batchFiles.set(`${batch.orgId}:ws:${attachment.id}`, new Uint8Array(file.bytes));
     addEvent(
@@ -984,6 +1075,9 @@ export const mockBatchApi: BatchApi = {
           targetId: sampleId,
           label: sampleId,
           sub: found ? `${found.job.customer} — ${found.sample.description}` : "",
+          // The grid and review must show a voided member as voided — the
+          // job page already does (review fix, pass 2).
+          voided: found ? found.sample.voided || found.job.voided : false,
         };
       }),
       ...batch.qc.map((entry) => {
@@ -1164,6 +1258,12 @@ export const mockBatchApi: BatchApi = {
   async releaseClaim(actor, batchId): Promise<BatchActionResult> {
     const batch = mockDb.batches.get(batchKey(actor.orgId, batchId));
     if (!batch || batch.orgId !== actor.orgId) return { status: "error", message: "Unknown batch." };
+    // Same closed-record rule as claimBatch/assignBatch — the UI hides the
+    // button on finished batches, but the server is the boundary (invariant 4;
+    // review fix, pass 2).
+    if (batch.status === "completed" || batch.status === "voided") {
+      return { status: "error", message: "A finished batch is not claimed — it is a closed record." };
+    }
     if (batch.assignee !== actor.email) {
       return { status: "error", message: "You can only release your own claim — managers reassign via Assign." };
     }
@@ -1337,6 +1437,9 @@ export const mockBatchApi: BatchApi = {
       actorEmail: actor.email,
       batchId,
       configId,
+      // Frozen at preview time: confirm compares the live config against this
+      // so an edit between preview and confirm can never be applied silently.
+      configJson: JSON.stringify(config),
       fileName: file.fileName,
       bytes: new Uint8Array(file.bytes),
       createdAt: Date.now(),
@@ -1376,6 +1479,23 @@ export const mockBatchApi: BatchApi = {
     }
     const config = mockDb.importConfigs.get(staged.configId);
     if (!config) return { status: "error", message: "Unknown import configuration." };
+    // Confirm repeats the preview-time guards AND requires the config to
+    // still be exactly what was previewed: a config edited, deactivated or
+    // moved to another lab in the staging window must invalidate the preview,
+    // never be applied silently (US-D5 AC 1/3 — review fix, pass 2).
+    if (config.orgId !== actor.orgId || config.labId !== batch.labId) {
+      return { status: "error", message: "Unknown import configuration for this lab." };
+    }
+    if (config.status !== "active") {
+      return { status: "error", message: "This import configuration is deactivated." };
+    }
+    if (JSON.stringify(config) !== staged.configJson) {
+      mockDb.pendingImports.delete(token);
+      return {
+        status: "error",
+        message: "The import configuration changed after the preview — run the preview again.",
+      };
+    }
 
     // Deterministic re-run on the SAME staged bytes — the stored event is
     // provably what was previewed and confirmed.
@@ -2319,6 +2439,12 @@ function appendRecord(
     validityReason: null,
     amendmentCheckRequired: false,
   };
+  // A result IS recorded work: the first one flips the one-way composition
+  // latch (US-D1 AC 10 "no results") — this single point covers manual entry,
+  // bulk paste, worksheet auto-read and import confirm. Also keeps
+  // sampleMethodProgress truthful, which derives "work started" from the same
+  // flag (review fix, pass 2).
+  batch.compositionLatched = true;
   batch.results.push(record); // append-only — nothing is ever altered
   addEvent(
     batch,
@@ -2373,15 +2499,19 @@ function parseWorksheetEntries(
     return { error: "The worksheet file is not readable (seed demo) — enter results manually or via paste." };
   }
   const text = Buffer.from(bytes).toString("utf8");
-  const lines = text.split(/\r?\n/).filter((l) => l.trim() !== "");
-  if (lines.length < 2) {
-    return { error: "No readable Results sheet in the worksheet — falling back to manual entry or paste." };
+  // The delimiter is DECLARED, never sniffed (ADR-4 discipline, same as the
+  // D5 import parser): the Results sheet follows the system's own working-copy
+  // convention — comma-delimited CSV with RFC 4180 quoting. Sniffing could
+  // split a decimal-comma value into two plausible wrong numbers; a file in
+  // another format is rejected with the fallback notice instead of guessed
+  // (review fix, pass 2 — decision logged 6 Jul 2026).
+  const table = parseCsv(text, "comma");
+  if ("error" in table) {
+    return {
+      error: `No readable Results sheet in the worksheet (${table.error}) — falling back to manual entry or paste.`,
+    };
   }
-  // Delimiter: whichever splits the header into the most cells.
-  const delimiter = ["\t", ";", ","].sort(
-    (a, b) => lines[0].split(b).length - lines[0].split(a).length,
-  )[0];
-  const header = lines[0].split(delimiter).map((h) => h.trim());
+  const header = table.header;
   const notices: string[] = [];
 
   // Header columns after the first map to analytes by name (ci), a
@@ -2402,8 +2532,16 @@ function parseWorksheetEntries(
   );
   const entries: BulkEntry[] = [];
   let unknownRows = 0;
-  for (const line of lines.slice(1)) {
-    const cells = line.split(delimiter).map((c) => c.trim());
+  for (const [rowIndex, rawCells] of table.rows.entries()) {
+    // A row wider than the header means the cells no longer align with the
+    // analyte columns (e.g. an unquoted decimal comma) — reject the sheet
+    // rather than silently dropping or shifting values (review fix, pass 2).
+    if (rawCells.length > header.length) {
+      return {
+        error: `No readable Results sheet in the worksheet (row ${rowIndex + 2} has more cells than the header) — falling back to manual entry or paste.`,
+      };
+    }
+    const cells = rawCells.map((c) => c.trim());
     const rowId = cells[0]?.toLowerCase() ?? "";
     const target: ResultTarget | null = sampleIds.has(rowId)
       ? { targetType: "sample", targetId: sampleIds.get(rowId)! }
@@ -2416,7 +2554,7 @@ function parseWorksheetEntries(
     }
     columnAnalytes.forEach((analyteId, i) => {
       const raw = cells[i + 1] ?? "";
-      if (analyteId && raw.trim() !== "") entries.push({ target, analyteId, raw });
+      if (analyteId && raw !== "") entries.push({ target, analyteId, raw });
     });
   }
   if (unknownRows > 0) notices.push(`${unknownRows} row(s) match no sample or QC code of this batch and were ignored.`);
