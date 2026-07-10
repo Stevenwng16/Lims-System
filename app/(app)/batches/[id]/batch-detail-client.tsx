@@ -476,6 +476,12 @@ function WorksheetUpload({ batchId }: { batchId: string }) {
         {pending ? "Uploading…" : "Upload"}
       </Button>
       {state.error && <p className="text-xs text-destructive">{state.error}</p>}
+      {/* AC 14: the Results sheet is read AT UPLOAD — this is either the
+          pending-preview prompt or the missing/mismatching-sheet fallback
+          notice (pass-3 review fix). */}
+      {state.success && state.notice && (
+        <p className="text-xs text-muted-foreground">{state.notice}</p>
+      )}
     </form>
   );
 }
@@ -977,6 +983,10 @@ export function BatchDetailClient({
                         {imp.rows.filter((r) => r.outcome === "imported").length} row(s) imported ·{" "}
                         {imp.rows.filter((r) => r.outcome === "skipped").length} skipped ·{" "}
                         {imp.rows.filter((r) => r.outcome === "rejected").length} rejected
+                        {/* AC 7 default-keep rows have their own disposition
+                            in the event (pass-3 review fix). */}
+                        {imp.rows.some((r) => r.outcome === "kept-existing") &&
+                          ` · ${imp.rows.filter((r) => r.outcome === "kept-existing").length} kept existing`}
                         {imp.supersedeReason && ` · replacements: ${imp.supersedeReason}`}
                       </p>
                     </li>

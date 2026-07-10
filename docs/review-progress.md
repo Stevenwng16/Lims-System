@@ -38,15 +38,16 @@ security/auth/secrets discussion tends to get the turn routed off Fable. To avoi
 
 **Already reviewed** (adversarial multi-agent audit done, findings fixed):
 Epic A (US-A1–A7) · US-B1 · US-C1–C4 · US-B2 · **Pass 2: US-B3 · US-D1 · US-D3 (6 Jul 2026 —
-18 findings confirmed, 14 fixed, 4 held as decisions for Ramazan, see below; changes in
-`docs/review-changes.md`)**.
+18 findings confirmed, 14 fixed, 4 held as decisions for Ramazan, see below)** · **Pass 3:
+US-D4 · US-D5 · US-D6 (10 Jul 2026 — 38 findings confirmed, 30 fixed, 8 held as decisions for
+Ramazan, see below; changes in `docs/review-changes.md`)**.
 
 **Pending:**
 
 | Pass | Scope | How |
 |---|---|---|
-| 3 | US-D4 data entry · US-D5 instrument import · US-D6 review & completion | workflow |
 | 4 | US-D2 work queue · cross-cutting consistency sweep over everything the fixes touched | workflow |
+| Re-verify | regression sweep over all previously reviewed areas (Epic A · B1 · B2 · C1–C4 · pass-2/3 scope) | workflow |
 | Backend | Steven's Supabase auth layer (see file list below) | **inline, not a workflow** |
 
 ## Pass-2 open decisions (Ramazan — options + recommendation, not yet built)
@@ -79,6 +80,65 @@ Epic A (US-A1–A7) · US-B1 · US-C1–C4 · US-B2 · **Pass 2: US-B3 · US-D1 
    US-B3 AC 2's wording marks only the description optional. Options: (a) make the four fields
    required server-side; (b) keep them optional and log the relaxation (e.g. in-house built
    equipment) as a deliberate decision — either is fine, it just must be decided and recorded.
+
+## Pass-3 open decisions (Ramazan — options + recommendation, not yet built)
+
+1. **Completion gate accepts a bare rejected cell** (high — genuine AC 6 vs AC 5 tension).
+   AC 6 enumerates the completable final states as "valid, or rejected **accompanied by** a
+   superseding valid value or an explicit no-result, or no-result"; AC 5 says "a rejected value
+   that will not be re-measured stands as rejected-with-reason". The code enforces the AC 5
+   reading: a current-rejected cell never blocks completion, so epic F's "report the valid set"
+   gets a silent hole. Options: (a) enforce AC 6 literally — a current-rejected cell blocks
+   completion, and the reviewer gets a closure route (allow a superseding no-result on a
+   rejected current cell during review) — **recommended**, honors the no-silent-holes promise;
+   (b) keep the AC 5 reading, amend AC 6 via the Notion route and log the decision.
+2. **The completeness gate ignores QC cells** (medium). A QC cell with NO record is neither a
+   gap nor undecided: a batch completes with a wholly unmeasured blank and afterwards no flow
+   can ever account for it. AC 4's text says "(sample × analyte)" but AC 6 says "every cell" and
+   AC 7 puts QC on the same model. Options: (a) include QC entries in the gap list and let
+   closeGapNoResult accept QC targets — **recommended** (§7.7 anchor; entry grid and gap list
+   currently disagree about the cell universe); (b) keep sample-only and log the exclusion.
+3. **Excel number cells import through a float** (high). exceljs `.text` on a number cell is the
+   stored IEEE double rendered by JS, not the displayed text: "0.010" (format `0.000`) imports
+   as "0.01" — entered precision is altered, contradicting the logged never-float rule; under a
+   declared-comma config every number cell is rejected with a misleading message. Options:
+   (a) accept only string-typed cells, rejecting number/date/formula cells per cell with reason
+   "stored by Excel as a number — cannot be read as original text" — **recommended**, ADR-4-
+   consistent (labs export CSV or text-formatted sheets); (b) render via the cell's number
+   format (deterministic but itself an interpretation, and rounds); (c) accept the
+   shortest-string double and log the precision caveat as an accepted deviation.
+4. **Numeric-looking qualifier names reinterpret instrument text** (high). An admin can rename a
+   qualifier to "12"; every pasted/auto-read cell "12" then becomes a qualifier record instead
+   of the measured number (preview shows "✓ 12" — indistinguishable). Options: (a) forbid
+   qualifier names that parse as numbers or start with `<`/`>` in updateList AND reject cells
+   matching both a qualifier and the numeric grammar as ambiguous — **recommended** (both);
+   (b) only the interpretRawCell ambiguity rejection (existing numeric-named qualifiers stay as
+   dead weight).
+5. **Excel import reads `worksheets[0]`, undeclared and unvalidated** (high). The first sheet in
+   tab order is parsed — even a hidden one; instrument exports often put a Summary sheet first,
+   whose rounded values import as plausible data. Options: (a) declare the sheet name in the
+   import configuration and refuse when absent — **recommended** (AC 1: "the configuration
+   defines the mapping"); (b) refuse workbooks with more than one visible sheet; (c) log a
+   first-visible-sheet convention (and at minimum never read a hidden sheet).
+6. **AC 6's locale display is not implemented** (low). The grid shows canonical point-form
+   values to every user ("12.4", never "12,4"). Data correctness is unaffected; implementing it
+   naively creates the copy/re-paste ambiguity trap the parser guards against. Options: (a) log
+   the deviation and amend AC 6 via the Notion route — **recommended**; (b) implement
+   locale-aware display from a per-org/per-user setting, format-only, copy-out canonical.
+7. **Import-configs page scopes to the active lab** (low), deviating from the 4 Jul masterdata
+   exemption (QC/equipment pages show all the user's labs) and dead-ending an admin with no lab
+   assignments. Options: (a) extend the exemption using the QC-materials lab-resolution pattern
+   — **recommended**; (b) log active-lab scoping for this screen as deliberate.
+8. **An all-skipped/all-rejected confirm refuses before storing the import event** (low). The
+   typed skip reasons and the rejected-cell accounting are recorded nowhere; there is no trace
+   the transfer was attempted. Options: (a) store the event (file, checksum, snapshot, row
+   outcomes) even when nothing applies and report "nothing applied" — **recommended** (§7.11
+   full row accounting); (b) log refusal-only as an accepted deviation (the preview is the only
+   record).
+
+Observation for Ramazan (not a finding): the repo still has **no persistent test suite** — every
+story's DoD lists tests, and the review passes verify behavior via throwaway scratch harnesses.
+Worth deciding where the 81 pass-3 checks (and pass-2's 52) should permanently live.
 
 ## Pass file-scopes
 
@@ -123,11 +183,24 @@ the seed script, and the committed `.env.local`.
 
 Behavioral checks per story were run by copying the real `lib` modules into a scratch dir with
 rewritten import paths and running under `node --experimental-strip-types --no-warnings`. Full-app
-check: `npx next build` (should be green, ~23 routes). The mock store version key in `lib/mock-db.ts`
-is bumped whenever the seed shape changes.
+check: `npx next build` (should be green, 28 routes as of pass 3). The mock store version key in
+`lib/mock-db.ts` (currently `__limsMockDbV23`) is bumped whenever the seed shape changes.
 
 ## Status
 
+- **Pass 3 complete (10 Jul 2026).** Run as an ultracode workflow on Fable 5 (15 reviewers →
+  merge, 53 raw → 28 canonical → 3 double-checks per finding → coverage critic → 5 targeted
+  round-2 reviewers → 11 more findings; 3 findings whose verifiers died on API connection errors
+  re-verified by hand). 38 confirmed; 30 fixed with inline comments; 8 held as the decisions
+  above. Verified: `npx next build` green (28 routes); **81 behavioral checks** (scratch
+  harness, real lib modules) all passing. Store key bumped to `__limsMockDbV23`. Changes +
+  reasoning for Steven: `docs/review-changes.md`. New decision-log entries dated 10 Jul 2026.
+- **Pass-3 changed files (for Ramazan's commit):** `lib/mock-db.ts`,
+  `lib/batches/import-parse.ts`, `lib/batches/mock.ts`, `lib/batches/types.ts`,
+  `lib/settings/mock.ts`, `lib/settings/types.ts`, `app/(app)/batches/actions.ts`,
+  `app/(app)/batches/[id]/results-grid.tsx`, `app/(app)/batches/[id]/review-panel.tsx`,
+  `app/(app)/batches/[id]/batch-detail-client.tsx`, `app/(app)/settings/actions.ts`,
+  `docs/decision-log.md`, `docs/review-changes.md`, this file.
 - **Pass 2 complete (6 Jul 2026).** Run as an ultracode workflow on Fable 5 (12 reviewers →
   merge → 3 double-checks per finding → coverage critic → 5 targeted round-2 reviewers; 18
   confirmed findings, 1 rejected). 14 fixed with inline comments; 4 held as the decisions above.
@@ -145,9 +218,10 @@ is bumped whenever the seed shape changes.
   when the Supabase backend is active (`NEXT_PUBLIC_SUPABASE_URL` set), since those demo credentials
   don't exist on the real backend and a login page shouldn't enumerate real accounts. Recorded in
   `docs/review-changes.md`.
-- **Next up (full remaining plan, in order):** pass 3 (US-D4 · US-D5 · US-D6) as a workflow →
-  pass 4 (US-D2 + consistency sweep) as a workflow → a re-verification workflow sweep over the
-  already-reviewed areas (Epic A · B1 · B2 · C1–C4 · pass-2 scope; Ramazan wants everything
-  covered, spare tokens available — focus on regressions from the fixes and anything earlier
-  passes missed) → the backend pass **inline and last** (keep all workflow launches before it,
-  per the routing workaround above). When Ramazan decides the four open items, build them too.
+- **Next up (full remaining plan, in order):** pass 4 (US-D2 + consistency sweep, incl.
+  re-scanning everything the pass-3 fixes touched) as a workflow → a re-verification workflow
+  sweep over the already-reviewed areas (Epic A · B1 · B2 · C1–C4 · pass-2/3 scope; Ramazan
+  wants everything covered, spare tokens available — focus on regressions from the fixes and
+  anything earlier passes missed) → the backend pass **inline and last** (keep all workflow
+  launches before it, per the routing workaround above). When Ramazan decides the twelve open
+  items (4 from pass 2 + 8 from pass 3), build them too.

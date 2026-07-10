@@ -5,6 +5,164 @@ reasoning, written for Steven and future readers. Newest pass first. Each change
 inline comment at the spot in the code; fundamental choices are one-liners in
 `docs/decision-log.md`.
 
+## Pass 3 — US-D4 data entry · US-D5 instrument import · US-D6 review & completion (10 Jul 2026)
+
+Run as a multi-agent review (15 scoped reviewers → duplicate-merge, 53 raw → 28 canonical →
+3 independent double-checks per finding → coverage check → 5 targeted round-2 reviewers, 11 more
+findings, all confirmed). Three findings lost their double-checkers to API connection errors and
+were re-verified by hand against the code. **38 findings confirmed; 30 fixed below; 8 are design
+decisions waiting on Ramazan** (listed in `docs/review-progress.md` § "Pass-3 open decisions").
+Verified: `npx next build` green (28 routes) plus **81 behavioral checks** against the real lib
+modules in the scratch harness (all passing). The mock store key is bumped to `__limsMockDbV23`
+(seed shapes changed).
+
+### High — every preview→confirm flow now applies exactly the staged preview, or refuses
+
+One theme covered six findings: paste confirm resubmitted the LIVE textarea mapping instead of
+the previewed block; worksheet confirm silently applied whatever worksheet version was latest
+(a replacement upload between preview and confirm wrote values the confirmer never saw, under
+their attribution); both confirms silently dropped cells that became occupied and re-interpreted
+raw text under the LIVE qualifier list; import confirm re-ran matching against the live batch,
+so a composition edit in the 30-minute window silently overrode explicit skip/map resolutions
+(a row skipped "stale run, do not use" imported anyway once its sample was added); and replace
+decisions were applied against a live conflict set, so `replaceAll` superseded values entered
+AFTER the preview under a reason that did not describe them.
+
+The fix extends the pass-2 `confirmImport` frozen-config contract to everything:
+
+- `lib/mock-db.ts` — new ephemeral `pendingBulk` staging map (one-use token, 30-min TTL, bound
+  to the previewing user); `pendingImports` entries additionally freeze `matchesJson` (per-row
+  match set) and `conflictsJson` (cellKey → existing record id).
+- `lib/batches/mock.ts` — `previewBulk`/`previewWorksheet` stage entries + per-cell verdicts
+  (+ worksheet version) and return a token; `confirmBulk`/`confirmWorksheet` take the token,
+  re-run the preview server-side and refuse on ANY divergence ("run the preview again") — a
+  worksheet replacement, a newly occupied cell or a qualifier change can no longer write or
+  silently drop anything unreviewed. `confirmImport` refuses when the recomputed match set or
+  conflict set differs from the staged one, and replace can only reach conflicts the preview
+  showed, anchored to the exact record id the user saw (conflicts on rows mapped at confirm
+  default to keep-existing). This also fixed the misleading dead-end error for rows whose
+  sample was removed mid-window (now: "composition changed — run the preview again").
+- `app/(app)/batches/actions.ts` + `results-grid.tsx` — the confirm forms post only the token;
+  the paste dialog additionally disables Confirm with a hint when the block/start row diverge
+  from what was previewed.
+
+### High — a confirm-time map resolution could write two records into one cell
+
+`computeImport`'s duplicate guard only registers rows whose target matched at parse time, so an
+unknown row MAPPED at confirm onto a sample another row already writes produced two records for
+one (target × analyte) — the second displacing the first with no supersede pointer and no
+reason, inverting the decided first-row-wins rule. `confirmImport` now runs a cross-row
+duplicate guard over the planned writes: first write stands, later ones become per-cell
+rejections with the standard duplicate message.
+
+### High — QC lot expectations are now frozen on the batch, not read live
+
+The review view computed "expected 50.0 ±2.5 (lot …)" from the LIVE QC material, so a masterdata
+correction after (or during!) review silently rewrote the context the reviewer judged against —
+US-B2 AC 7 explicitly promises the opposite. `BatchQcEntry` now carries an `expectations`
+snapshot (type, lot number, expected values + tolerances, deep-copied) taken when the material
+first enters the batch (create or composition edit; kept entries never re-snapshot), and
+`qcExpectationsFor` renders only the snapshot. Decision logged 10 Jul 2026.
+
+### High — bulk-paste preview leaked another organisation's QC code
+
+`previewEntries` built each cell's row label BEFORE validating the target, and `rowLabelFor`
+resolved QC codes through the GLOBAL material map — a hand-built preview payload with a foreign
+material id got the foreign code echoed back in the rejected cell. `rowLabelFor` now resolves
+codes only through the batch's own QC entries (unknown ids echo the raw id), and validation runs
+before any label is built. (Invariant 5; the hard-never "never read across organisations".)
+
+### High — import files that cannot be trusted are now rejected loudly
+
+Four structural holes let plausible-but-wrong values import silently (ADR-4's exact "never
+guess" class):
+
+- **Duplicate headers** (`Sample;Pb;Cd;Zn;Pb`) resolved to the LAST physical column — wrong
+  values, or wrong ROW IDENTITY when the ID column repeats → the file is rejected naming the
+  duplicated header (`computeImport`).
+- **Row width ≠ header width** (an unquoted decimal comma splits one value into two and shifts
+  the rest — narrower OR wider) → all that row's values are rejected with the reason; other rows
+  still import (the worksheet path's pass-2 wider-only rule is tightened to exact width, whole-
+  sheet fallback as before).
+- **Long orientation without a unit declaration**: an analyte missing from `longUnits` imported
+  with NO unit check — now its cells are rejected until the unit is declared ("no unit declared…
+  factor-1000 guard"), mirroring wide's mandatory per-column unit.
+- **Content after a closing CSV quote** (`"1,2"3` → "1,23") was silently absorbed — now a
+  structural error, per the parser's own "fail loudly" contract (`lib/batches/import-parse.ts`).
+
+### Medium — corrections/replacements are anchored against concurrent writes
+
+`enterResult` and `replaceCompletedResult` chained the new record onto whatever was current at
+submit time: two colleagues correcting the same cell attached the second mandatory reason to a
+record its author never saw and wrote a false before-value into the append-only audit event.
+Both now take `expectedCurrentRecordId` (the record the dialog displayed; null = empty cell) and
+refuse on mismatch with a refresh message — the same pattern as `completeStep`'s concurrency
+token. The cell dialog and the replace dialog send the id they render.
+
+### Medium — segregation no longer counts the reviewer's own review acts
+
+With "reviewer must differ" ON, a reviewer's first no-result gap closure made them a
+"performing analyst" (`enteredBy` on the record) and permanently blocked their second closure,
+every validity decision and completion — AC 4's closure route dead-ended the review. Records
+created in reviewer capacity (gap closures, post-completion replacements) now carry
+`reviewAct: true` and are excluded from the participation test; bench work (manual entry,
+paste, worksheet, import) still counts.
+
+### Medium — the paste path parses the clipboard like the import path
+
+Three geometry bugs could write valid-looking values to the WRONG samples: interior blank lines
+were filtered out (shifting all following rows one sample up), quoted cells with embedded
+newlines/tabs were split blindly (Excel quotes such cells on the clipboard), and values falling
+past the grid edge vanished without a trace. The pasted block is now tokenized by the shared
+strict RFC 4180 scanner (tab-delimited, interior blank rows kept, structural errors shown), and
+out-of-grid values are counted and shown in the dialog before preview/confirm
+(`parseClipboardBlock` in `lib/batches/import-parse.ts`; `results-grid.tsx`).
+
+### Medium — audit trails that US-D5 AC 1 / US-A7 AC 8 demand now exist
+
+- Import configurations: `createdAt`/`createdBy` + an append-only `events` list (equipment
+  pattern) written on create, per-field before→after on edit, and on every status change with
+  its reason (`statusReason` alone held only the latest).
+- Org/lab settings: `SettingsApi` now carries the acting user (resolved server-side), and every
+  change appends to `OrgSettings.settingsEvents` with old → new — including the
+  reviewer-segregation toggle (whether four-eyes review was ON for a given period is now
+  provable) and qualifier renames (which steer how pasted/auto-read text is interpreted).
+
+### Medium — LOQ defaults, auto-read at upload
+
+- **"<LOQ" one click could dead-end**: an LOQ like "1.250" hits the manual-entry ambiguity
+  pattern, so AC 4's prefilled boundary was rejected and that exact precision was unrecordable.
+  A boundary exactly equal to the analyte's stored LOQ (canonical by construction) is now
+  accepted as-is; the parser rule itself is untouched (logged decision).
+- **AC 14's "reads it at upload"** now happens: `uploadWorksheet` parses the Results sheet
+  immediately and the upload form shows either "Results sheet detected: N readable value(s) —
+  review and confirm…" or the fallback notice. Reading never gates the upload; writing still
+  goes through preview + confirm.
+
+### Low — smaller fixes
+
+- **Seed coherence**: completed seed batch METB26-0001 violated the completion gate it
+  demonstrates (sample × Zn cell had no record and could never be accounted for). A third valid
+  sample record is seeded and the completion event's count corrected; store key bumped.
+- **Config-shape validation**: two columns mapping ONE analyte, an ID column doubling as an
+  analyte column, and long configs whose ID/analyte/value columns collide are rejected at save
+  (previously surfaced per-import as misleading "duplicate row" rejections).
+- **Import event honesty**: rows whose every cell was deliberately kept are stored (and shown)
+  as `kept-existing` instead of "rejected" with an empty reason; genuinely rejected rows
+  aggregate their cells' reasons; a long-orientation value with an EMPTY analyte cell is now a
+  listed rejection instead of vanishing from the accounting.
+- **Physical row numbers**: previews, resolutions and the frozen import event now number rows by
+  the row's physical position in the file (header = row 1, blank rows counted), so the stored
+  outcomes point at what an auditor sees when opening the stored original.
+
+### Held for Ramazan (not fixed — design decisions)
+
+Eight findings imply a design choice: see `docs/review-progress.md` § "Pass-3 open decisions"
+(completion gate vs a bare rejected cell; QC cells outside the completeness gate; Excel number
+cells arriving as floats; numeric-looking qualifier names; undeclared Excel sheet selection;
+locale display of values; import-configs page lab scoping; refusing an all-skipped confirm
+without storing the event).
+
 ## Pass 2 — US-B3 equipment · US-D1 create batch · US-D3 step workflow (6 Jul 2026)
 
 Run as a multi-agent review (12 reviewers → duplicate-merge → 3 independent double-checks per

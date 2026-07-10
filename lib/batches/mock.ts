@@ -3,6 +3,7 @@ import {
   currentMethodVersion,
   getOrgSettings,
   mockDb,
+  type BatchQcEntry,
   type ImportCellOutcome,
   type ImportRowOutcome,
   type MethodStep,
@@ -434,6 +435,42 @@ function validateComposition(
   return { sampleIds, toConfirm, qc };
 }
 
+/**
+ * Freeze the QC expectation context when a material ENTERS a batch (pass-3
+ * review fix): US-B2 AC 7 promises "existing batch QC records keep the exact
+ * values they were checked against", and the US-D6 review view must show the
+ * exact lot's expectation — a live masterdata lookup would silently rewrite
+ * that context whenever the material is corrected afterwards. `held` carries
+ * the batch's current entries on the edit path: an entry the batch already
+ * holds KEEPS its original snapshot (quantity changes never re-snapshot).
+ */
+function withQcSnapshots(
+  qc: { materialId: string; quantity: number }[],
+  held?: BatchQcEntry[],
+): BatchQcEntry[] {
+  const heldByMaterial = new Map((held ?? []).map((e) => [e.materialId, e] as const));
+  return qc.map((entry) => {
+    const existing = heldByMaterial.get(entry.materialId);
+    if (existing) return { ...entry, expectations: existing.expectations };
+    const material = mockDb.qcMaterials.get(entry.materialId);
+    return {
+      ...entry,
+      expectations: {
+        type: material?.type ?? "blank",
+        lotNumber: material?.lotNumber ?? "",
+        // Deep-copied so a later in-place masterdata edit can never reach
+        // into the frozen snapshot (invariant 3).
+        expectedValues: (material?.expectedValues ?? []).map((v) => ({
+          analyteName: v.analyteName,
+          unit: v.unit,
+          expectedValue: v.expectedValue,
+          tolerance: { ...v.tolerance },
+        })),
+      },
+    };
+  });
+}
+
 function csvField(value: string): string {
   return /[",\n\r]/.test(value) ? `"${value.replace(/"/g, '""')}"` : value;
 }
@@ -731,7 +768,8 @@ export const mockBatchApi: BatchApi = {
       compositionLatched: false, // AC 10: flips ONE WAY at first advance/work (US-D3/D4)
       assignee: null, // US-D2: born into the open pool
       sampleIds: validated.sampleIds,
-      qc: validated.qc,
+      // Expectation context frozen per entry at addition (pass-3 review fix).
+      qc: withQcSnapshots(validated.qc),
       workingCopy: null,
       worksheets: [], // US-D4 AC 9 versions; gates the final step (US-D3 AC 5)
       results: [], // ADR-2 measurement records (US-D4) — append-only
@@ -814,7 +852,9 @@ export const mockBatchApi: BatchApi = {
     const qcWas = qcSetLabel(batch.qc); // captured BEFORE the mutation below
 
     batch.sampleIds = validated.sampleIds;
-    batch.qc = validated.qc;
+    // Held entries keep their original expectation snapshot; only NEWLY added
+    // materials are snapshotted now (pass-3 review fix).
+    batch.qc = withQcSnapshots(validated.qc, batch.qc);
     applyConfirmedMethods(actor, batch, validated.toConfirm);
 
     if (added.length || removed.length || qcChanged) {
@@ -1019,7 +1059,14 @@ export const mockBatchApi: BatchApi = {
     return { status: "success", batchId };
   },
 
-  async uploadWorksheet(actor, batchId, file): Promise<BatchActionResult> {
+  async uploadWorksheet(
+    actor,
+    batchId,
+    file,
+  ): Promise<
+    | { status: "success"; batchId?: string; autoRead?: { readable: boolean; message: string } }
+    | { status: "error"; message: string }
+  > {
     const batch = mockDb.batches.get(batchKey(actor.orgId, batchId));
     if (!batch || batch.orgId !== actor.orgId) return { status: "error", message: "Unknown batch." };
     const denied = canWorkBatch(actor, batch);
@@ -1055,7 +1102,24 @@ export const mockBatchApi: BatchApi = {
       "worksheet-uploaded",
       `Completed worksheet v${batch.worksheets.length}: ${file.fileName} (sha256 ${attachment.sha256.slice(0, 16)}…)`,
     );
-    return { status: "success", batchId };
+    // AC 14: the Results sheet is read AT UPLOAD (pass-3 review fix — it was
+    // previously read only when the user opened the read dialog, so a
+    // missing/mismatching sheet produced no notice at the moment AC 14
+    // promises one). The outcome is returned for immediate display; reading
+    // never gates the upload itself — auto-read is a convenience, never a
+    // gate. The actual write still goes through preview + confirm.
+    const method = mockDb.methods.get(batch.methodId);
+    const parsed = method
+      ? parseWorksheetEntries(batch, methodVersionByNumber(method, batch.methodVersion))
+      : ({ error: "Unknown method." } as const);
+    const autoRead =
+      "error" in parsed
+        ? { readable: false, message: parsed.error }
+        : {
+            readable: true,
+            message: `Results sheet detected: ${parsed.entries.length} readable value(s) — review and confirm the pending preview via Results ▸ "Read from worksheet…".`,
+          };
+    return { status: "success", batchId, autoRead };
   },
 
   // ---- US-D4: manual data entry ------------------------------------------
@@ -1116,17 +1180,33 @@ export const mockBatchApi: BatchApi = {
     };
   },
 
-  async enterResult(actor, batchId, target, analyteId, input, supersedeReason): Promise<BatchActionResult> {
+  async enterResult(actor, batchId, target, analyteId, input, supersedeReason, expectedCurrentRecordId): Promise<BatchActionResult> {
     const loaded = loadForEntry(actor, batchId);
     if ("error" in loaded) return { status: "error", message: loaded.error };
     const { batch, pinned } = loaded;
 
     const targetError = validateTarget(batch, pinned, target, analyteId);
     if (targetError) return { status: "error", message: targetError };
-    const validated = validateResultInput(batch.orgId, input);
+    const validated = validateResultInput(
+      batch.orgId,
+      input,
+      pinned.analytes.find((a) => a.id === analyteId)?.loq ?? null,
+    );
     if ("error" in validated) return { status: "error", message: validated.error };
 
     const existing = currentByCell(batch).get(cellKey(target, analyteId)) ?? null;
+    // AC 8 anchoring (pass-3 review fix): the dialog says which record it
+    // showed as current (null = an empty cell). If another record landed in
+    // the cell meanwhile, the mandatory correction reason — written about the
+    // value the user SAW — would be permanently attached to a record they
+    // never saw, and the audit event would state a false before-value. Same
+    // pattern as completeStep's expectedStepIndex token.
+    if ((existing?.id ?? null) !== expectedCurrentRecordId) {
+      return {
+        status: "error",
+        message: "This cell changed while you were looking — refresh and review the current value first.",
+      };
+    }
     const reason = supersedeReason.trim();
     // AC 8: correction = supersede, ALWAYS with a reason; the original stays.
     if (existing && !reason) {
@@ -1156,28 +1236,47 @@ export const mockBatchApi: BatchApi = {
     if ("error" in loaded) return { status: "error", message: loaded.error };
     if (entries.length === 0) return { status: "error", message: "The pasted block contains no values." };
     if (entries.length > 500) return { status: "error", message: "The pasted block is too large (max 500 cells)." };
-    return { status: "success", cells: previewEntries(loaded.batch, loaded.pinned, entries) };
+    const cells = previewEntries(loaded.batch, loaded.pinned, entries);
+    // Staged for the one-use confirm: what gets written is EXACTLY this
+    // preview, or nothing (pass-3 review fix — see the staging block above).
+    const token = stageBulk(actor, batchId, "paste", entries, cells, null);
+    return { status: "success", token, cells };
   },
 
-  async confirmBulk(actor, batchId, entries): Promise<BatchActionResult> {
+  async confirmBulk(actor, batchId, token): Promise<BatchActionResult> {
     const loaded = loadForEntry(actor, batchId);
     if ("error" in loaded) return { status: "error", message: loaded.error };
     const { batch, pinned } = loaded;
-    if (entries.length > 500) return { status: "error", message: "The pasted block is too large (max 500 cells)." };
+    const staged = takeBulk(actor, batchId, token, "paste");
+    if ("error" in staged) return { status: "error", message: staged.error };
 
-    // Re-validated server-side at confirm; only accepted cells are written,
-    // rejected/occupied cells stay empty for manual handling (AC 13).
+    // Deterministic re-run on the STAGED entries (never a client resend, so a
+    // post-preview textarea edit cannot reach the confirm), then compared
+    // against the staged verdicts: ANY divergence — a cell newly occupied by
+    // a colleague, a qualifier added/renamed in the window — refuses instead
+    // of silently writing or silently dropping (pass-3 review fix).
+    const entries = JSON.parse(staged.entriesJson) as BulkEntry[];
+    const cells = previewEntries(batch, pinned, entries);
+    if (JSON.stringify(cells) !== staged.outcomesJson) {
+      mockDb.pendingBulk.delete(token);
+      return {
+        status: "error",
+        message: "The grid changed since the preview (a value was added or the qualifier list changed) — run the preview again.",
+      };
+    }
     let written = 0;
-    for (const cell of previewEntries(batch, pinned, entries)) {
+    for (const cell of cells) {
       if (cell.outcome.kind !== "accepted") continue;
       const input = interpretRawCell(batch.orgId, cell.raw);
       if ("error" in input) continue;
-      const validated = validateResultInput(batch.orgId, input);
+      const loq = pinned.analytes.find((a) => a.id === cell.analyteId)?.loq ?? null;
+      const validated = validateResultInput(batch.orgId, input, loq);
       if ("error" in validated) continue;
       const analyteName = pinned.analytes.find((a) => a.id === cell.analyteId)?.name ?? cell.analyteId;
       appendRecord(batch, actor, cell.target, cell.analyteId, validated.value, "manual", null, null, null, null, cell.rowLabel, analyteName);
       written += 1;
     }
+    mockDb.pendingBulk.delete(token); // one-use
     if (written === 0) return { status: "error", message: "No accepted cells to write — fix the rejected ones and try again." };
     return { status: "success", batchId };
   },
@@ -1187,29 +1286,61 @@ export const mockBatchApi: BatchApi = {
     if ("error" in loaded) return { status: "error", message: loaded.error };
     const parsed = parseWorksheetEntries(loaded.batch, loaded.pinned);
     if ("error" in parsed) return { status: "error", message: parsed.error };
+    const cells = previewEntries(loaded.batch, loaded.pinned, parsed.entries);
+    // Staged with the worksheet VERSION it was read from: a replacement
+    // upload in the window invalidates the confirm (pass-3 review fix).
+    const token = stageBulk(actor, batchId, "worksheet", parsed.entries, cells, parsed.worksheetVersion);
     return {
       status: "success",
+      token,
       worksheetVersion: parsed.worksheetVersion,
-      cells: previewEntries(loaded.batch, loaded.pinned, parsed.entries),
+      cells,
       notices: parsed.notices,
     };
   },
 
-  async confirmWorksheet(actor, batchId): Promise<BatchActionResult> {
+  async confirmWorksheet(actor, batchId, token): Promise<BatchActionResult> {
     const loaded = loadForEntry(actor, batchId);
     if ("error" in loaded) return { status: "error", message: loaded.error };
     const { batch, pinned } = loaded;
+    const staged = takeBulk(actor, batchId, token, "worksheet");
+    if ("error" in staged) return { status: "error", message: staged.error };
+    // The confirm is pinned to the worksheet VERSION the user previewed: a
+    // replacement upload between preview and confirm must refuse, never be
+    // silently applied — the user reviewed a different file (pass-3 review
+    // fix; mirror of the frozen-config rule on confirmImport, 6 Jul 2026).
+    if (batch.worksheets.length !== staged.worksheetVersion) {
+      mockDb.pendingBulk.delete(token);
+      return {
+        status: "error",
+        message: "The worksheet was replaced after the preview — run the preview again.",
+      };
+    }
     // The server RE-READS the worksheet itself — origin "worksheet" always
     // means "this value came from that file version", never a client claim.
     const parsed = parseWorksheetEntries(batch, pinned);
-    if ("error" in parsed) return { status: "error", message: parsed.error };
+    if ("error" in parsed) {
+      mockDb.pendingBulk.delete(token);
+      return { status: "error", message: parsed.error };
+    }
+    const cells = previewEntries(batch, pinned, parsed.entries);
+    // Same any-divergence rule as confirmBulk: entries prove the file re-read
+    // matches what was previewed; outcomes catch grid/qualifier drift.
+    if (JSON.stringify(parsed.entries) !== staged.entriesJson || JSON.stringify(cells) !== staged.outcomesJson) {
+      mockDb.pendingBulk.delete(token);
+      return {
+        status: "error",
+        message: "The worksheet or the grid changed since the preview — run the preview again.",
+      };
+    }
 
     let written = 0;
-    for (const cell of previewEntries(batch, pinned, parsed.entries)) {
+    for (const cell of cells) {
       if (cell.outcome.kind !== "accepted") continue;
       const input = interpretRawCell(batch.orgId, cell.raw);
       if ("error" in input) continue;
-      const validated = validateResultInput(batch.orgId, input);
+      const loq = pinned.analytes.find((a) => a.id === cell.analyteId)?.loq ?? null;
+      const validated = validateResultInput(batch.orgId, input, loq);
       if ("error" in validated) continue;
       const analyteName = pinned.analytes.find((a) => a.id === cell.analyteId)?.name ?? cell.analyteId;
       appendRecord(
@@ -1228,6 +1359,7 @@ export const mockBatchApi: BatchApi = {
       );
       written += 1;
     }
+    mockDb.pendingBulk.delete(token); // one-use
     if (written === 0) {
       return { status: "error", message: "Nothing to write — every readable cell is occupied or rejected." };
     }
@@ -1349,17 +1481,47 @@ export const mockBatchApi: BatchApi = {
 
     if (configId === null) {
       const id = `imp-${crypto.randomUUID()}`;
-      mockDb.importConfigs.set(id, { id, orgId: actor.orgId, status: "active", ...normalized });
+      const now = new Date().toISOString();
+      mockDb.importConfigs.set(id, {
+        id,
+        orgId: actor.orgId,
+        status: "active",
+        ...normalized,
+        // AC 1 audit: attribution + append-only per-config events, the same
+        // convention as batches/equipment (pass-3 review fix — previously
+        // nothing recorded who created or changed a configuration).
+        createdAt: now,
+        createdBy: actor.email,
+        events: [
+          {
+            id: `cfgev-${crypto.randomUUID()}`,
+            at: now,
+            by: actor.email,
+            summary: `Configuration created (${normalized.orientation}, ${normalized.fileType}, "${normalized.decimalSeparator}" decimal separator)`,
+          },
+        ],
+      });
       return { status: "success" };
     }
     const config = mockDb.importConfigs.get(configId);
     if (!config || config.orgId !== actor.orgId) return { status: "error", message: "Unknown configuration." };
     const denied2 = canManageConfigs(actor, config.labId);
     if (denied2) return { status: "error", message: denied2 };
-    // Config changes are audited with before/after by the real backend
-    // (invariant 1); past imports stay explainable regardless — each event
-    // froze the mapping it applied (decision 4 Jul 2026).
+    // AC 1: "changes are audited with before/after" — recorded HERE, per
+    // field, before the edit is applied (pass-3 review fix; the old comment
+    // deferred this to the real backend, which is the "skip the audit write
+    // for now" the hard-never list forbids). Past imports stay explainable
+    // regardless — each import event froze the mapping it applied.
+    const changes = describeConfigChanges(config, normalized);
     Object.assign(config, normalized);
+    if (changes.length > 0) {
+      config.events.push({
+        id: `cfgev-${crypto.randomUUID()}`,
+        at: new Date().toISOString(),
+        by: actor.email,
+        summary: `Edited: ${changes.join("; ")}`,
+      });
+    }
     return { status: "success" };
   },
 
@@ -1372,9 +1534,17 @@ export const mockBatchApi: BatchApi = {
     if (!reason.trim()) {
       return { status: "error", message: "A reason is required to change the configuration's status." };
     }
-    // Deactivate, never delete (AC 1).
+    // Deactivate, never delete (AC 1). Every status change is an event with
+    // its reason — statusReason alone holds only the LATEST reason, so the
+    // deactivate→reactivate history was unreconstructable (pass-3 fix).
     config.status = status;
     config.statusReason = reason.trim();
+    config.events.push({
+      id: `cfgev-${crypto.randomUUID()}`,
+      at: new Date().toISOString(),
+      by: actor.email,
+      summary: `${status === "inactive" ? "Deactivated" : "Reactivated"} — ${reason.trim()}`,
+    });
     return { status: "success" };
   },
 
@@ -1440,6 +1610,10 @@ export const mockBatchApi: BatchApi = {
       // Frozen at preview time: confirm compares the live config against this
       // so an edit between preview and confirm can never be applied silently.
       configJson: JSON.stringify(config),
+      // The match set and the conflict set are frozen the same way (pass-3
+      // review fix): confirm applies exactly what was previewed or refuses.
+      matchesJson: JSON.stringify(computed.rows.map((r) => [r.rowNumber, matchKeyOf(r.match)])),
+      conflictsJson: JSON.stringify(conflictEntriesFor(batch, computed.rows)),
       fileName: file.fileName,
       bytes: new Uint8Array(file.bytes),
       createdAt: Date.now(),
@@ -1504,6 +1678,33 @@ export const mockBatchApi: BatchApi = {
     const computed = computeImport(batch, pinned, config, table);
     if ("error" in computed) return { status: "error", message: computed.error };
 
+    // The MATCH SET must be exactly what was previewed (pass-3 review fix):
+    // composition stays editable through the staging window, and a drifted
+    // match silently overrides the user's explicit decisions — a row skipped
+    // with a reason imports once its sample is added to the batch, a mapped
+    // row lands on an auto-match instead of the chosen target. Any drift
+    // refuses; the resolutions were made against the previewed matches only.
+    if (JSON.stringify(computed.rows.map((r) => [r.rowNumber, matchKeyOf(r.match)])) !== staged.matchesJson) {
+      mockDb.pendingImports.delete(token);
+      return {
+        status: "error",
+        message: "The batch composition changed after the preview — run the preview again.",
+      };
+    }
+    // Same discipline for the CONFLICT SET (pass-3 review fix): replace
+    // decisions were consented against the previewed conflicts; a value that
+    // appeared, or a conflict whose current record changed, in the window
+    // must refuse — never a silent supersede under a reason written about a
+    // different value, never a silent keep of a cell the preview called ok.
+    if (JSON.stringify(conflictEntriesFor(batch, computed.rows)) !== staged.conflictsJson) {
+      mockDb.pendingImports.delete(token);
+      return {
+        status: "error",
+        message: "The batch's results changed after the preview — run the preview again.",
+      };
+    }
+    const stagedConflicts = new Map(JSON.parse(staged.conflictsJson) as [string, string][]);
+
     const resolutionByRow = new Map(resolutions.map((r) => [r.rowNumber, r] as const));
     const replaceSet = new Set(replaceCells.map((c) => `${c.rowNumber}:${c.analyteName.toLowerCase()}`));
     const current = currentByCell(batch);
@@ -1522,6 +1723,13 @@ export const mockBatchApi: BatchApi = {
     const writes: PlannedWrite[] = [];
     const rowOutcomes: ImportRowOutcome[] = [];
     let anyReplace = false;
+    // Cross-row duplicate guard AT CONFIRM (pass-3 review fix): computeImport's
+    // in-file guard keys on compute-time targets, so a row the user MAPS at
+    // confirm can collide with another row's cell without it — two records
+    // into one cell in one import, the second displacing the first with no
+    // supersede pointer or reason. First planned write wins; later ones are
+    // rejected per cell, identical to the decided in-file duplicate rule.
+    const plannedCells = new Set<string>();
 
     for (const row of computed.rows) {
       const resolution = resolutionByRow.get(row.rowNumber);
@@ -1569,8 +1777,27 @@ export const mockBatchApi: BatchApi = {
             cellOutcomes.push({ analyteName: cell.analyteName, raw: cell.raw, result: "rejected", reason: cell.error ?? "Not evaluated." });
             continue;
           }
-          const existing = current.get(cellKey(target, cell.analyteId)) ?? null;
-          const replace = existing !== null && (replaceAll || replaceSet.has(`${row.rowNumber}:${cell.analyteName.toLowerCase()}`));
+          const cellId = cellKey(target, cell.analyteId);
+          if (plannedCells.has(cellId)) {
+            // See plannedCells above — a confirm-time map resolution collided
+            // with another row's cell: first row wins, this one is rejected.
+            cellOutcomes.push({
+              analyteName: cell.analyteName,
+              raw: cell.raw,
+              result: "rejected",
+              reason: "Duplicate row for this entry — the first row was kept (QC position bookkeeping is post-MVP).",
+            });
+            continue;
+          }
+          plannedCells.add(cellId);
+          const existing = current.get(cellId) ?? null;
+          // Replace applies ONLY to conflicts the preview showed, anchored to
+          // the exact record the user saw (pass-3 review fix): a conflict on
+          // a row MAPPED at confirm time was never previewed as a conflict —
+          // it defaults to keep-existing, visible in the event's cells.
+          const replaceRequested =
+            existing !== null && (replaceAll || replaceSet.has(`${row.rowNumber}:${cell.analyteName.toLowerCase()}`));
+          const replace = replaceRequested && existing !== null && stagedConflicts.get(cellId) === existing.id;
           if (existing && !replace) {
             cellOutcomes.push({ analyteName: cell.analyteName, raw: cell.raw, result: "kept-existing", reason: "" });
             continue; // AC 7 default: keep existing
@@ -1599,12 +1826,24 @@ export const mockBatchApi: BatchApi = {
         }
       }
 
+      // AC 8 row accounting (pass-3 review fix): a row whose every non-empty
+      // cell was deliberately kept is "kept-existing", not "rejected"; a
+      // rejected row carries its cells' aggregated reasons; a row with no
+      // values says so — the immutable event must state each disposition
+      // honestly ("rejected" with an empty reason misdescribed both cases).
+      const anyWritten = cellOutcomes.some((c) => c.result === "imported" || c.result === "superseded-existing");
+      const anyKept = cellOutcomes.some((c) => c.result === "kept-existing");
+      const rejectedReasons = [...new Set(cellOutcomes.filter((c) => c.result === "rejected" && c.reason).map((c) => c.reason))];
       rowOutcomes.push({
         rowNumber: row.rowNumber,
         idCell: row.idCell,
         matched: matchedLabel,
-        outcome: skipped ? "skipped" : cellOutcomes.some((c) => c.result === "imported" || c.result === "superseded-existing") ? "imported" : "rejected",
-        reason: skipped ?? (cellOutcomes.every((c) => c.result === "rejected") ? (cellOutcomes[0]?.reason ?? "") : ""),
+        outcome: skipped ? "skipped" : anyWritten ? "imported" : anyKept ? "kept-existing" : "rejected",
+        reason:
+          skipped ??
+          (anyWritten || anyKept
+            ? ""
+            : rejectedReasons.join("; ") || "The row contains no values for the mapped columns."),
         cells: cellOutcomes,
       });
     }
@@ -1794,6 +2033,9 @@ export const mockBatchApi: BatchApi = {
       validitySetAt: new Date().toISOString(),
       validityReason: null,
       amendmentCheckRequired: false,
+      // A review act, not bench work — the AC 2 segregation check must not
+      // count this against the reviewer (pass-3 review fix).
+      reviewAct: true,
     };
     batch.results.push(record);
     addEvent(
@@ -1836,7 +2078,7 @@ export const mockBatchApi: BatchApi = {
     return { status: "success", batchId };
   },
 
-  async replaceCompletedResult(actor, batchId, target, analyteId, input, reason): Promise<BatchActionResult> {
+  async replaceCompletedResult(actor, batchId, target, analyteId, input, reason, expectedCurrentRecordId): Promise<BatchActionResult> {
     const batch = mockDb.batches.get(batchKey(actor.orgId, batchId));
     if (!batch || batch.orgId !== actor.orgId) return { status: "error", message: "Unknown batch." };
     if (batch.status !== "completed") {
@@ -1852,11 +2094,26 @@ export const mockBatchApi: BatchApi = {
     const pinned = methodVersionByNumber(method, batch.methodVersion);
     const targetError = validateTarget(batch, pinned, target, analyteId);
     if (targetError) return { status: "error", message: targetError };
-    const validated = validateResultInput(batch.orgId, input);
+    const validated = validateResultInput(
+      batch.orgId,
+      input,
+      pinned.analytes.find((a) => a.id === analyteId)?.loq ?? null,
+    );
     if ("error" in validated) return { status: "error", message: validated.error };
     const existing = currentByCell(batch).get(cellKey(target, analyteId));
     if (!existing) {
       return { status: "error", message: "This cell holds no value to replace." };
+    }
+    // The dialog names the record it shows as "Current" — the replacement is
+    // anchored to exactly that record (pass-3 review fix): two managers with
+    // overlapping sessions must not silently chain the second §7.8.8 reason
+    // onto the first manager's replacement (same pattern as setResultValidity
+    // and completeStep's concurrency token).
+    if (existing.id !== expectedCurrentRecordId) {
+      return {
+        status: "error",
+        message: "This cell changed while you were looking — refresh and review the current value before replacing it.",
+      };
     }
 
     const analyteName = pinned.analytes.find((a) => a.id === analyteId)?.name ?? analyteId;
@@ -1885,6 +2142,9 @@ export const mockBatchApi: BatchApi = {
       // replacement flags "amendment check required"; epic F refines this to
       // actual issued-report linkage and consumes it.
       amendmentCheckRequired: true,
+      // A manager's review act (AC 8), not bench work — excluded from the
+      // AC 2 segregation participation test (pass-3 review fix).
+      reviewAct: true,
     };
     batch.results.push(record);
     addEvent(
@@ -1907,9 +2167,15 @@ function canReviewBatch(actor: BatchActor, batch: MockBatch): string | null {
   if (denied) return denied;
   const lab = mockDb.labs.get(batch.labId);
   if (lab?.reviewerMustDiffer) {
+    // AC 2 targets the PERFORMING analyst(s): step completions and results
+    // entered/imported as bench work. Records the reviewer creates in
+    // reviewer capacity (no-result gap closures, post-completion
+    // replacements — marked reviewAct) must not count, or the reviewer's
+    // first gap closure would lock them out of their own review
+    // (pass-3 review fix).
     const participated =
       batch.events.some((e) => e.type === "step-completed" && e.by === actor.email) ||
-      batch.results.some((r) => r.enteredBy === actor.email);
+      batch.results.some((r) => r.enteredBy === actor.email && !r.reviewAct);
     if (participated) {
       return "This lab requires the reviewer to differ from the performing analyst(s) — you completed steps or entered results on this batch (per-lab setting, US-A7).";
     }
@@ -1918,21 +2184,26 @@ function canReviewBatch(actor: BatchActor, batch: MockBatch): string | null {
 }
 
 /** AC 1: the exact lot's expectation per QC cell (US-B2 AC 3), or the blank's
- * reporting limit — context for the HUMAN judgement; no verdict until epic E. */
+ * reporting limit — context for the HUMAN judgement; no verdict until epic E.
+ * Reads the snapshot FROZEN when the entry joined the batch, never the live
+ * material (pass-3 review fix): a masterdata correction after the fact must
+ * not rewrite what the reviewer judged against — the review context has to be
+ * reconstructable afterwards (§7.7 / invariant 3). */
 function qcExpectationsFor(batch: MockBatch, pinned: MethodVersion): Record<string, string> {
   const out: Record<string, string> = {};
   for (const entry of batch.qc) {
-    const material = mockDb.qcMaterials.get(entry.materialId);
-    if (!material) continue;
+    const snapshot = entry.expectations;
     for (const analyte of pinned.analytes) {
       const key = `${entry.materialId}:${analyte.id}`;
-      if (material.type === "blank") {
+      if (snapshot.type === "blank") {
+        // The blank's target is "below the reporting limit" — the LOQ comes
+        // from the PINNED method version, which is itself frozen per batch.
         out[key] = analyte.loq
           ? `expected < LOQ (${analyte.loq}${analyte.unit ? ` ${analyte.unit}` : ""})`
           : "expected below reporting limit (no LOQ set on this analyte)";
         continue;
       }
-      const expected = material.expectedValues.find(
+      const expected = snapshot.expectedValues.find(
         (v) =>
           v.analyteName.trim().toLowerCase() === analyte.name.trim().toLowerCase() &&
           (v.unit?.trim().toLowerCase() ?? null) === (analyte.unit?.trim().toLowerCase() ?? null),
@@ -1942,7 +2213,7 @@ function qcExpectationsFor(batch: MockBatch, pinned: MethodVersion): Record<stri
           expected.tolerance.kind === "percent"
             ? `±${expected.tolerance.value}%`
             : `±${expected.tolerance.value}${analyte.unit ? ` ${analyte.unit}` : ""}`;
-        out[key] = `expected ${expected.expectedValue}${analyte.unit ? ` ${analyte.unit}` : ""} ${tolerance} (lot ${material.lotNumber})`;
+        out[key] = `expected ${expected.expectedValue}${analyte.unit ? ` ${analyte.unit}` : ""} ${tolerance} (lot ${snapshot.lotNumber})`;
       }
     }
   }
@@ -2008,6 +2279,43 @@ function canManageConfigs(actor: BatchActor, labId: string): string | null {
     : "You can only manage import configurations in your own lab(s).";
 }
 
+/** "field: old → new" per changed field — invariant 1's before/after for the
+ * per-config audit trail (pass-3 review fix). Mappings are summarized
+ * compactly; unchanged fields stay silent. */
+function describeConfigChanges(
+  before: MockImportConfig,
+  after: Omit<MockImportConfig, "id" | "orgId" | "status" | "statusReason" | "createdAt" | "createdBy" | "events">,
+): string[] {
+  const changes: string[] = [];
+  const simple: [string, string, string][] = [
+    ["name", before.name, after.name],
+    ["file type", before.fileType, after.fileType],
+    ["orientation", before.orientation, after.orientation],
+    ["ID column", before.idColumn, after.idColumn],
+    ["analyte column", before.analyteColumn, after.analyteColumn],
+    ["value column", before.valueColumn, after.valueColumn],
+    ["decimal separator", before.decimalSeparator, after.decimalSeparator],
+    ["CSV delimiter", before.csvDelimiter, after.csvDelimiter],
+  ];
+  for (const [label, b, a] of simple) {
+    if (b !== a) changes.push(`${label}: "${b}" → "${a}"`);
+  }
+  const columnsLabel = (cols: { header: string; analyteName: string; unit: string | null }[]) =>
+    cols.map((c) => `${c.header}→${c.analyteName} [${c.unit ?? "no unit"}]`).join(", ") || "none";
+  const unitsLabel = (units: { analyteName: string; unit: string | null }[]) =>
+    units.map((u) => `${u.analyteName} [${u.unit ?? "no unit"}]`).join(", ") || "none";
+  if (columnsLabel(before.columns) !== columnsLabel(after.columns)) {
+    changes.push(`columns: ${columnsLabel(before.columns)} → ${columnsLabel(after.columns)}`);
+  }
+  if (unitsLabel(before.longUnits) !== unitsLabel(after.longUnits)) {
+    changes.push(`unit declarations: ${unitsLabel(before.longUnits)} → ${unitsLabel(after.longUnits)}`);
+  }
+  if (before.labId !== after.labId) {
+    changes.push(`lab: ${labNameById(before.labId)} → ${labNameById(after.labId)}`);
+  }
+  return changes;
+}
+
 function validateConfigInput(actor: BatchActor, input: ImportConfigInput): string | null {
   if (!input.name.trim()) return "The configuration needs a name.";
   const lab = mockDb.labs.get(input.labId);
@@ -2022,6 +2330,8 @@ function validateConfigInput(actor: BatchActor, input: ImportConfigInput): strin
   if (input.orientation === "wide") {
     if (input.columns.length < 1) return "Map at least one analyte column.";
     const seen = new Set<string>();
+    const seenAnalytes = new Set<string>();
+    const idKey = input.idColumn.trim().toLowerCase();
     for (const c of input.columns) {
       if (!c.header.trim()) return "Every mapped column needs its file header.";
       if (!c.analyteName.trim()) return "Every mapped column needs an analyte name.";
@@ -2031,10 +2341,27 @@ function validateConfigInput(actor: BatchActor, input: ImportConfigInput): strin
       const key = c.header.trim().toLowerCase();
       if (seen.has(key)) return `Column "${c.header}" is mapped twice.`;
       seen.add(key);
+      // Two different headers feeding ONE analyte would make which value wins
+      // silently order-dependent, and an ID column doubling as a value column
+      // can never parse — both are configuration mistakes the manager should
+      // hear about at save time, not per-import (pass-3 review fix).
+      const analyteKey = c.analyteName.trim().toLowerCase();
+      if (seenAnalytes.has(analyteKey)) return `Analyte "${c.analyteName}" is mapped from two different columns — map it once.`;
+      seenAnalytes.add(analyteKey);
+      if (key === idKey) return `Column "${c.header}" is both the ID column and an analyte column — choose one role.`;
     }
   } else {
     if (!input.analyteColumn.trim()) return "Name the analyte column (long orientation).";
     if (!input.valueColumn.trim()) return "Name the value column (long orientation).";
+    // The three structural columns must be distinct — an ID column doubling
+    // as the analyte or value column cannot describe a real export and would
+    // only surface as confusing per-cell rejections (pass-3 review fix).
+    const idKey = input.idColumn.trim().toLowerCase();
+    const analyteKey = input.analyteColumn.trim().toLowerCase();
+    const valueKey = input.valueColumn.trim().toLowerCase();
+    if (idKey === analyteKey || idKey === valueKey || analyteKey === valueKey) {
+      return "The ID, analyte and value columns must be three different columns.";
+    }
     const seen = new Set<string>();
     for (const u of input.longUnits) {
       if (!u.analyteName.trim()) return "Every unit row needs an analyte name.";
@@ -2072,18 +2399,25 @@ async function readImportTable(
     await workbook.xlsx.load(Buffer.from(bytes) as unknown as ArrayBuffer);
     const sheet = workbook.worksheets[0];
     if (!sheet) return { error: "The workbook contains no sheets." };
-    const rows: string[][] = [];
+    // Physical sheet row kept per data row (pass-3 review fix): the stored
+    // event's row numbers must point at the rows the user sees in Excel,
+    // blank rows included.
+    const rows: { cells: string[]; physicalRow: number }[] = [];
     for (let r = 1; r <= sheet.rowCount; r++) {
       const row = sheet.getRow(r);
       const cells: string[] = [];
       for (let c = 1; c <= sheet.columnCount; c++) {
         cells.push(String(row.getCell(c).text ?? "").trim());
       }
-      if (cells.some((cell) => cell !== "")) rows.push(cells);
+      if (cells.some((cell) => cell !== "")) rows.push({ cells, physicalRow: r });
     }
     if (rows.length < 2) return { error: "The sheet has no data rows under the header." };
     const [header, ...data] = rows;
-    return { header, rows: data };
+    return {
+      header: header.cells,
+      rows: data.map((d) => d.cells),
+      rowNumbers: data.map((d) => d.physicalRow),
+    };
   } catch {
     return { error: "The Excel file could not be read — is it a valid .xlsx export?" };
   }
@@ -2114,6 +2448,20 @@ function computeImport(
 ): { rows: ComputedRow[]; notices: string[]; unitErrors: string[] } | { error: string } {
   const notices: string[] = [];
   const unitErrors: string[] = [];
+  // Duplicate header names (after the same trim+lowercase normalization the
+  // lookups use) would silently resolve to the LAST physical column — wrong
+  // values under a valid-looking parse, or wrong ROW IDENTITY when the ID
+  // column repeats. Rejected loudly, same discipline as the strict CSV
+  // parser (pass-3 review fix).
+  const seenHeaders = new Set<string>();
+  for (const h of table.header) {
+    const norm = h.trim().toLowerCase();
+    if (!norm) continue;
+    if (seenHeaders.has(norm)) {
+      return { error: `The file header contains "${h.trim()}" more than once — which column is meant would be a guess. Fix the export before importing.` };
+    }
+    seenHeaders.add(norm);
+  }
   const headerIndex = new Map(table.header.map((h, i) => [h.trim().toLowerCase(), i] as const));
   const col = (name: string) => headerIndex.get(name.trim().toLowerCase());
 
@@ -2149,6 +2497,14 @@ function computeImport(
   }
   let longIdx: { analyte: number; value: number } | null = null;
   const longUnitErrors = new Map<string, string>(); // analyteName(lc) → error
+  // Long orientation declares units per analyte in config.longUnits — the
+  // ONLY mechanism implementing the AC 6 unit guard on this path. An analyte
+  // the config does NOT declare must fail closed (its cells rejected), not
+  // import unchecked: wide requires a unit per mapped column, and a silent
+  // undeclared pass is exactly the factor-1000 slip AC 6 exists to prevent
+  // (pass-3 review fix).
+  const longDeclared = new Set(config.longUnits.map((u) => u.analyteName.trim().toLowerCase()));
+  const longUndeclaredReported = new Set<string>();
   if (config.orientation === "long") {
     const a = col(config.analyteColumn);
     const v = col(config.valueColumn);
@@ -2204,11 +2560,25 @@ function computeImport(
           ? { targetType: "qc", targetId: match.materialId }
           : null;
 
+    // A row whose width differs from the header cannot be aligned to columns:
+    // an unquoted decimal separator splits one value into two plausible wrong
+    // numbers and shifts every later cell (wider AND narrower rows — a
+    // 3-cell row under a 4-column header hides the same split). Every value
+    // in such a row is rejected instead of trusted; the ID cell is still
+    // tried for matching so the row stays accounted for (pass-3 review fix —
+    // the worksheet path got this guard in pass 2, the import path had not).
+    const widthError =
+      cells.length !== table.header.length
+        ? `Row has ${cells.length} cells where the header has ${table.header.length} — the cells cannot be aligned to columns (unquoted separator?).`
+        : null;
+
     const computed: ComputedCell[] = [];
     const evaluate = (analyteName: string, analyteId: string | null, raw: string, unitError: string | null) => {
       if (raw.trim() === "") return; // empty cells simply stay empty
       const cell: ComputedCell = { analyteName, analyteId, raw, parsed: null, error: null };
-      if (unitError) {
+      if (widthError) {
+        cell.error = widthError;
+      } else if (unitError) {
         cell.error = unitError;
       } else if (!analyteId) {
         cell.error = "No matching analyte on this method — ignored.";
@@ -2241,18 +2611,43 @@ function computeImport(
       const raw = (cells[longIdx.value] ?? "").trim();
       if (analyteName) {
         const analyte = analyteByName(analyteName);
+        const nameKey = analyteName.trim().toLowerCase();
         if (!analyte) {
           unknownLongAnalytes.set(analyteName, (unknownLongAnalytes.get(analyteName) ?? 0) + 1);
         }
-        evaluate(
-          analyteName,
-          analyte?.id ?? null,
+        // Fail closed on an undeclared unit (see longDeclared above).
+        let unitError = longUnitErrors.get(nameKey) ?? null;
+        if (!unitError && analyte && !longDeclared.has(nameKey)) {
+          unitError = `Analyte "${analyteName}": no unit declared in the configuration — its cells are rejected until the unit is declared (factor-1000 guard).`;
+          if (!longUndeclaredReported.has(nameKey)) {
+            longUndeclaredReported.add(nameKey);
+            unitErrors.push(unitError);
+          }
+        }
+        evaluate(analyteName, analyte?.id ?? null, raw, unitError);
+      } else if (raw) {
+        // A value with an EMPTY analyte cell would otherwise vanish from the
+        // accounting entirely — no preview marker, no stored reason (pass-3
+        // review fix): reject it explicitly so "every row accounted for"
+        // holds for the observation that is present in the file.
+        computed.push({
+          analyteName: "(missing analyte name)",
+          analyteId: null,
           raw,
-          longUnitErrors.get(analyteName.trim().toLowerCase()) ?? null,
-        );
+          parsed: null,
+          error: widthError ?? "The analyte cell is empty — the value cannot be attributed to an analyte.",
+        });
       }
     }
-    return { rowNumber: i + 1, idCell, match, cells: computed };
+    // A misaligned row whose mapped positions all read empty would slip
+    // through with zero cells — surface the width problem as one explicit
+    // rejected cell so the preview and the stored event carry the reason.
+    if (widthError && computed.length === 0) {
+      computed.push({ analyteName: "(row)", analyteId: null, raw: idCell, parsed: null, error: widthError });
+    }
+    // Physical row in the file (header/blank rows counted) — what the user
+    // sees when opening the stored original (pass-3 review fix).
+    return { rowNumber: table.rowNumbers[i] ?? i + 1, idCell, match, cells: computed };
   });
 
   for (const [name, count] of unknownLongAnalytes) {
@@ -2268,6 +2663,49 @@ function computeImport(
     }
   }
   return { rows, notices, unitErrors };
+}
+
+/** Canonical string for a row's match — staged at preview, compared at
+ * confirm so a composition edit in the staging window can never silently
+ * override the user's skip/map decisions (pass-3 review fix). */
+function matchKeyOf(match: ImportPreviewRow["match"]): string {
+  switch (match.kind) {
+    case "sample":
+      return `sample:${match.id}`;
+    case "qc":
+      return `qc:${match.materialId}`;
+    case "out-of-batch":
+      return `out-of-batch:${match.sampleId}`;
+    case "unknown":
+      return "unknown";
+  }
+}
+
+/** The conflict set over MATCHED rows (cellKey → the existing record's id) —
+ * staged at preview, compared at confirm: replace decisions were consented
+ * against exactly these conflicts, so any occupancy drift in the staging
+ * window (a value entered or corrected meanwhile) refuses instead of
+ * replacing something the user never saw or silently keeping what the
+ * preview showed as importable (pass-3 review fix). Row/cell iteration order
+ * is deterministic, so JSON equality is a faithful drift check. */
+function conflictEntriesFor(batch: MockBatch, rows: ComputedRow[]): [string, string][] {
+  const current = currentByCell(batch);
+  const out: [string, string][] = [];
+  for (const row of rows) {
+    const target: ResultTarget | null =
+      row.match.kind === "sample"
+        ? { targetType: "sample", targetId: row.match.id }
+        : row.match.kind === "qc"
+          ? { targetType: "qc", targetId: row.match.materialId }
+          : null;
+    if (!target) continue;
+    for (const cell of row.cells) {
+      if (!cell.parsed || !cell.analyteId) continue;
+      const existing = current.get(cellKey(target, cell.analyteId));
+      if (existing) out.push([cellKey(target, cell.analyteId), existing.id]);
+    }
+  }
+  return out;
 }
 
 /** US-D2 AC 4: the distinct step names across the lab's ACTIVE methods
@@ -2355,8 +2793,13 @@ function validateTarget(
   return "Invalid result target.";
 }
 
-/** AC 2/3/5 — turn raw form input into a stored ResultValue, or refuse. */
-function validateResultInput(orgId: string, input: ResultValueInput): { value: ResultValue } | { error: string } {
+/** AC 2/3/5 — turn raw form input into a stored ResultValue, or refuse.
+ * `analyteLoq` is the analyte's stored reporting limit, when known. */
+function validateResultInput(
+  orgId: string,
+  input: ResultValueInput,
+  analyteLoq: string | null = null,
+): { value: ResultValue } | { error: string } {
   switch (input.kind) {
     case "numeric": {
       const parsed = parseNumericInput(input.raw);
@@ -2365,6 +2808,17 @@ function validateResultInput(orgId: string, input: ResultValueInput): { value: R
     case "censored": {
       if (input.qualifier !== "<" && input.qualifier !== ">") {
         return { error: "A censored value uses < or >." };
+      }
+      // AC 4's one-click "<LOQ": the stored LOQ is already canonical (decimal
+      // point, validated at method save) and unambiguous by construction —
+      // but its digits can HIT the manual-entry thousands-ambiguity pattern
+      // (e.g. "1.250"), which would dead-end the default the story promises
+      // and make that exact precision unrecordable. A boundary EXACTLY equal
+      // to the analyte's stored LOQ is therefore accepted as-is; every other
+      // boundary goes through the full rule (pass-3 review fix — the parser
+      // rule itself is a logged decision and stays untouched).
+      if (analyteLoq && input.boundaryRaw.trim() === analyteLoq) {
+        return { value: { kind: "censored", qualifier: input.qualifier, boundary: analyteLoq } };
       }
       const parsed = parseNumericInput(input.boundaryRaw);
       if (!parsed.ok) return { error: `Boundary: ${parsed.message}` };
@@ -2438,6 +2892,9 @@ function appendRecord(
     validitySetAt: null,
     validityReason: null,
     amendmentCheckRequired: false,
+    // Bench work (manual entry, paste, worksheet, import) — counts for the
+    // AC 2 segregation test, unlike reviewAct records (pass-3 review fix).
+    reviewAct: false,
   };
   // A result IS recorded work: the first one flips the one-way composition
   // latch (US-D1 AC 10 "no results") — this single point covers manual entry,
@@ -2478,9 +2935,14 @@ function interpretRawCell(orgId: string, raw: string): ResultValueInput | { erro
 
 function rowLabelFor(batch: MockBatch, target: ResultTarget): string {
   if (target.targetType === "sample") return target.targetId;
+  // Resolve the QC code ONLY for entries this batch actually holds: a
+  // client-supplied material id must never be resolved through the global
+  // map, which crosses the organisation boundary (invariant 5 — pass-3
+  // review fix; a rejected preview cell used to echo another org's code).
   const entry = batch.qc.find((e) => e.materialId === target.targetId);
+  if (!entry) return target.targetId;
   const code = mockDb.qcMaterials.get(target.targetId)?.code ?? target.targetId;
-  return entry && entry.quantity > 1 ? `${code} ×${entry.quantity}` : code;
+  return entry.quantity > 1 ? `${code} ×${entry.quantity}` : code;
 }
 
 /** Parse the latest worksheet's Results sheet (AC 14). The mock reads the
@@ -2533,12 +2995,15 @@ function parseWorksheetEntries(
   const entries: BulkEntry[] = [];
   let unknownRows = 0;
   for (const [rowIndex, rawCells] of table.rows.entries()) {
-    // A row wider than the header means the cells no longer align with the
-    // analyte columns (e.g. an unquoted decimal comma) — reject the sheet
-    // rather than silently dropping or shifting values (review fix, pass 2).
-    if (rawCells.length > header.length) {
+    // A row whose width DIFFERS from the header means the cells no longer
+    // align with the analyte columns (an unquoted decimal comma splits one
+    // value into two — and in a partially filled row that stays NARROWER
+    // than the header, so the pass-2 wider-only guard missed it): reject the
+    // sheet rather than silently dropping or shifting values (pass-2 fix,
+    // tightened to exact width in pass 3).
+    if (rawCells.length !== header.length) {
       return {
-        error: `No readable Results sheet in the worksheet (row ${rowIndex + 2} has more cells than the header) — falling back to manual entry or paste.`,
+        error: `No readable Results sheet in the worksheet (row ${table.rowNumbers[rowIndex] ?? rowIndex + 2} has ${rawCells.length} cells where the header has ${header.length}) — falling back to manual entry or paste.`,
       };
     }
     const cells = rawCells.map((c) => c.trim());
@@ -2569,13 +3034,16 @@ function previewEntries(batch: MockBatch, pinned: MethodVersion, entries: BulkEn
   const current = currentByCell(batch);
   const seen = new Set<string>();
   return entries.map((entry) => {
+    // The target is validated BEFORE anything about it is resolved for
+    // display — a foreign id must be rejected without echoing any data back
+    // (invariant 5 — pass-3 review fix).
+    const targetError = validateTarget(batch, pinned, entry.target, entry.analyteId);
     const base = {
       target: entry.target,
-      rowLabel: rowLabelFor(batch, entry.target),
+      rowLabel: targetError ? entry.target.targetId : rowLabelFor(batch, entry.target),
       analyteId: entry.analyteId,
       raw: entry.raw,
     };
-    const targetError = validateTarget(batch, pinned, entry.target, entry.analyteId);
     if (targetError) return { ...base, outcome: { kind: "rejected" as const, message: targetError } };
     const key = cellKey(entry.target, entry.analyteId);
     if (seen.has(key)) {
@@ -2587,7 +3055,11 @@ function previewEntries(batch: MockBatch, pinned: MethodVersion, entries: BulkEn
     if (current.has(key)) return { ...base, outcome: { kind: "occupied" as const } };
     const input = interpretRawCell(batch.orgId, entry.raw);
     if ("error" in input) return { ...base, outcome: { kind: "rejected" as const, message: input.error } };
-    const validated = validateResultInput(batch.orgId, input);
+    const validated = validateResultInput(
+      batch.orgId,
+      input,
+      pinned.analytes.find((a) => a.id === entry.analyteId)?.loq ?? null,
+    );
     if ("error" in validated) return { ...base, outcome: { kind: "rejected" as const, message: validated.error } };
     return { ...base, outcome: { kind: "accepted" as const, display: resultDisplay(validated.value) } };
   });
@@ -2607,6 +3079,65 @@ function loadForEntry(
   const method = mockDb.methods.get(batch.methodId);
   if (!method) return { error: "Unknown method." };
   return { batch, pinned: methodVersionByNumber(method, batch.methodVersion) };
+}
+
+// ---- Bulk-preview staging (pass-3 review fix) --------------------------------
+// Paste (AC 13) and worksheet auto-read (AC 14) confirms follow the same
+// contract the 6 Jul 2026 decision set for confirmImport: the confirm applies
+// EXACTLY the staged preview or refuses. Without it, a post-preview textarea
+// edit, a concurrent entry into a previewed-clean cell, or a qualifier-list
+// change in the window could make the confirm silently write values (or
+// silently drop cells) the user never saw accepted. One-use token, 30 min TTL,
+// bound to the previewing user so attribution on the records stays honest.
+
+const BULK_TTL_MS = 30 * 60_000;
+
+function stageBulk(
+  actor: BatchActor,
+  batchId: string,
+  kind: "paste" | "worksheet",
+  entries: BulkEntry[],
+  cells: BulkPreviewCell[],
+  worksheetVersion: number | null,
+): string {
+  for (const [token, staged] of mockDb.pendingBulk) {
+    if (Date.now() - staged.createdAt > BULK_TTL_MS) mockDb.pendingBulk.delete(token);
+  }
+  const token = `blk-tok-${crypto.randomUUID()}`;
+  mockDb.pendingBulk.set(token, {
+    orgId: actor.orgId,
+    actorEmail: actor.email,
+    batchId,
+    kind,
+    entriesJson: JSON.stringify(entries),
+    outcomesJson: JSON.stringify(cells),
+    worksheetVersion,
+    createdAt: Date.now(),
+  });
+  return token;
+}
+
+function takeBulk(
+  actor: BatchActor,
+  batchId: string,
+  token: string,
+  kind: "paste" | "worksheet",
+): NonNullable<ReturnType<typeof mockDb.pendingBulk.get>> | { error: string } {
+  const staged = mockDb.pendingBulk.get(token);
+  if (
+    !staged ||
+    staged.orgId !== actor.orgId ||
+    staged.batchId !== batchId ||
+    staged.actorEmail !== actor.email ||
+    staged.kind !== kind
+  ) {
+    return { error: "The preview has expired — run the preview again." };
+  }
+  if (Date.now() - staged.createdAt > BULK_TTL_MS) {
+    mockDb.pendingBulk.delete(token);
+    return { error: "The preview has expired — run the preview again." };
+  }
+  return staged;
 }
 
 /** US-C3 AC 10 / US-D3 AC 1: the batches containing any of a job's samples,

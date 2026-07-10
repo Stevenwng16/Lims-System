@@ -246,6 +246,11 @@ function ReplaceDialog({
           <input type="hidden" name="targetType" value={target.targetType} />
           <input type="hidden" name="targetId" value={target.targetId} />
           <input type="hidden" name="analyteId" value={analyteId} />
+          {/* The record shown as "Current" below: the server anchors the
+              replacement to it, so two managers replacing the same cell in
+              overlapping sessions refuse instead of silently chaining the
+              second §7.8.8 reason onto the first replacement (pass-3 fix). */}
+          <input type="hidden" name="expectedCurrentRecordId" value={current.id} />
           <input type="hidden" name="valueKind" value={wireKind} />
           {(kind === "censored-lt" || kind === "censored-gt") && (
             <input type="hidden" name="qualifier" value={kind === "censored-lt" ? "<" : ">"} />

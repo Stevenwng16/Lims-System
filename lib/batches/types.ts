@@ -342,18 +342,26 @@ export interface BatchApi {
    * samples' per-method state returns to Received via the derived view. */
   voidBatch(actor: BatchActor, batchId: string, reason: string): Promise<BatchActionResult>;
   /** US-D4 AC 9 (thin slice consumed by AC 5's gate): upload the completed
-   * worksheet — replacing appends a NEW version, never an overwrite. */
+   * worksheet — replacing appends a NEW version, never an overwrite. AC 14:
+   * the Results sheet is read at upload; `autoRead` reports whether a pending
+   * preview is available or the fallback notice (pass-3 review fix). */
   uploadWorksheet(
     actor: BatchActor,
     batchId: string,
     file: { fileName: string; bytes: Uint8Array },
-  ): Promise<BatchActionResult>;
+  ): Promise<
+    | { status: "success"; batchId?: string; autoRead?: { readable: boolean; message: string } }
+    | { status: "error"; message: string }
+  >;
 
   // --- US-D4: manual data entry (the first ADR-2 records) ---
 
   resultsGrid(actor: BatchActor, batchId: string): Promise<ResultsGrid | null>;
   /** AC 2/5/7/8: enter or correct one cell. A correction REQUIRES a reason
-   * and appends a new record; the old one is never altered. */
+   * and appends a new record; the old one is never altered.
+   * `expectedCurrentRecordId` anchors the write to the record the dialog
+   * showed as current (null = an empty cell): a concurrent write refuses
+   * instead of misattaching the correction reason (pass-3 review fix). */
   enterResult(
     actor: BatchActor,
     batchId: string,
@@ -361,24 +369,30 @@ export interface BatchApi {
     analyteId: string,
     input: ResultValueInput,
     supersedeReason: string,
+    expectedCurrentRecordId: string | null,
   ): Promise<BatchActionResult>;
   /** AC 13: parse a pasted block per-cell with AC 5 validation — a preview,
-   * nothing is written. Occupied cells are flagged, never overwritten. */
+   * nothing is written. Occupied cells are flagged, never overwritten. The
+   * preview is STAGED under a one-use token: confirm applies exactly it or
+   * refuses (pass-3 review fix, mirroring the import contract). */
   previewBulk(actor: BatchActor, batchId: string, entries: BulkEntry[]): Promise<
-    { status: "error"; message: string } | { status: "success"; cells: BulkPreviewCell[] }
+    { status: "error"; message: string } | { status: "success"; token: string; cells: BulkPreviewCell[] }
   >;
-  /** AC 13: write the accepted cells of a paste (re-validated server-side;
-   * rejected/occupied cells are skipped and stay for manual handling). */
-  confirmBulk(actor: BatchActor, batchId: string, entries: BulkEntry[]): Promise<BatchActionResult>;
+  /** AC 13: write the accepted cells of the STAGED preview (re-validated
+   * server-side; any divergence from what was previewed refuses). */
+  confirmBulk(actor: BatchActor, batchId: string, token: string): Promise<BatchActionResult>;
   /** AC 14: read the latest worksheet's Results sheet into a pending preview
-   * (falls back with a clear notice — a convenience, never a gate). */
+   * (falls back with a clear notice — a convenience, never a gate). Staged
+   * under a one-use token like previewBulk (pass-3 review fix). */
   previewWorksheet(actor: BatchActor, batchId: string): Promise<
     | { status: "error"; message: string }
-    | { status: "success"; worksheetVersion: number; cells: BulkPreviewCell[]; notices: string[] }
+    | { status: "success"; token: string; worksheetVersion: number; cells: BulkPreviewCell[]; notices: string[] }
   >;
   /** AC 14: confirm the auto-read — the server RE-READS the worksheet itself
-   * so origin "worksheet" can never be forged onto hand-typed values. */
-  confirmWorksheet(actor: BatchActor, batchId: string): Promise<BatchActionResult>;
+   * so origin "worksheet" can never be forged onto hand-typed values, and
+   * refuses when the worksheet was replaced or the outcome set drifted since
+   * the staged preview (pass-3 review fix). */
+  confirmWorksheet(actor: BatchActor, batchId: string, token: string): Promise<BatchActionResult>;
 
   // --- US-D2: the coordination layer (open pool + optional assignment) ---
 
@@ -461,7 +475,10 @@ export interface BatchApi {
    * while gaps or undecided results remain. */
   completeBatch(actor: BatchActor, batchId: string): Promise<BatchActionResult>;
   /** AC 8: post-completion replace — Admin/Lab manager, mandatory reason,
-   * original retained, §7.8.8 "amendment check required" flag raised. */
+   * original retained, §7.8.8 "amendment check required" flag raised.
+   * `expectedCurrentRecordId` anchors the replacement to the record the
+   * dialog showed as current — overlapping replacements refuse instead of
+   * silently chaining onto each other (pass-3 review fix). */
   replaceCompletedResult(
     actor: BatchActor,
     batchId: string,
@@ -469,5 +486,6 @@ export interface BatchApi {
     analyteId: string,
     input: ResultValueInput,
     reason: string,
+    expectedCurrentRecordId: string,
   ): Promise<BatchActionResult>;
 }

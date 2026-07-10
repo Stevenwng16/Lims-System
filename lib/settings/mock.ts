@@ -12,23 +12,54 @@ function inRange(value: number, min: number, max: number, label: string): string
 
 const SEQ_TOKEN_GLOBAL = /\{SEQ:0+\}/g;
 
+// US-A7 AC 8 (pass-3 review fix): every settings change lands in the
+// append-only settingsEvents list with actor, timestamp and old → new values.
+// Whether e.g. "reviewer must differ" was ON when a batch was reviewed must
+// be provable afterwards — a bare boolean can't answer that.
+function logSettingsEvent(orgId: string, actorEmail: string, summary: string): void {
+  getOrgSettings(orgId).settingsEvents.push({
+    id: `setev-${crypto.randomUUID()}`,
+    at: new Date().toISOString(),
+    by: actorEmail,
+    summary,
+  });
+}
+
+/** "label: old → new" for each changed field — silent when unchanged. */
+function diffFields(pairs: [label: string, before: unknown, after: unknown][]): string[] {
+  const changes: string[] = [];
+  for (const [label, before, after] of pairs) {
+    if (before !== after) changes.push(`${label}: ${String(before)} → ${String(after)}`);
+  }
+  return changes;
+}
+
 export const mockSettingsApi: SettingsApi = {
   async getSettings(orgId) {
     return getOrgSettings(orgId);
   },
 
-  async updateSecurity(orgId, security): Promise<SettingsActionResult> {
+  async updateSecurity(orgId, security, actorEmail): Promise<SettingsActionResult> {
     // AC 7: numeric fields enforce sensible min/max; invalid cannot be saved.
     const error =
       inRange(security.minPasswordLength, 8, 128, "Minimum password length") ??
       inRange(security.lockoutThreshold, 3, 10, "Lockout threshold") ??
       inRange(security.sessionTimeoutMinutes, 5, 480, "Session timeout");
     if (error) return { status: "error", message: error };
-    getOrgSettings(orgId).security = security;
+    const settings = getOrgSettings(orgId);
+    const changes = diffFields([
+      ["minimum password length", settings.security.minPasswordLength, security.minPasswordLength],
+      ["require complexity", settings.security.requireComplexity, security.requireComplexity],
+      ["lockout threshold", settings.security.lockoutThreshold, security.lockoutThreshold],
+      ["session timeout (min)", settings.security.sessionTimeoutMinutes, security.sessionTimeoutMinutes],
+      ["require MFA", settings.security.requireMfa, security.requireMfa],
+    ]);
+    settings.security = security;
+    if (changes.length > 0) logSettingsEvent(orgId, actorEmail, `Security settings: ${changes.join("; ")}`);
     return { status: "success" };
   },
 
-  async updateIdentifiers(orgId, identifiers, jobLabel): Promise<SettingsActionResult> {
+  async updateIdentifiers(orgId, identifiers, jobLabel, actorEmail): Promise<SettingsActionResult> {
     // AC 7: exactly one {SEQ} token per template (zero → not unique; more than
     // one → only the first renders, audit finding 25). {JOB} belongs to the
     // sample number only.
@@ -94,13 +125,21 @@ export const mockSettingsApi: SettingsApi = {
     }
     if (!jobLabel.trim()) return { status: "error", message: "The job label cannot be empty." };
     const settings = getOrgSettings(orgId);
+    const changes = diffFields([
+      ["job number format", settings.identifiers.jobFormat, identifiers.jobFormat],
+      ["sample number format", settings.identifiers.sampleFormat, identifiers.sampleFormat],
+      ["batch number format", settings.identifiers.batchFormat, identifiers.batchFormat],
+      ["sequence reset", settings.identifiers.sequenceReset, identifiers.sequenceReset],
+      ["job label", settings.jobLabel, jobLabel.trim()],
+    ]);
     // AC 4: only future IDs are affected — nothing existing is ever rewritten.
     settings.identifiers = identifiers;
     settings.jobLabel = jobLabel.trim();
+    if (changes.length > 0) logSettingsEvent(orgId, actorEmail, `Identifier settings: ${changes.join("; ")}`);
     return { status: "success" };
   },
 
-  async updateList(orgId, list, edit: ListEdit): Promise<SettingsActionResult> {
+  async updateList(orgId, list, edit: ListEdit, actorEmail): Promise<SettingsActionResult> {
     const settings = getOrgSettings(orgId);
     const current = settings[list];
 
@@ -125,9 +164,21 @@ export const mockSettingsApi: SettingsApi = {
     }
 
     // All checks passed — now apply (rename/(de)activate; never delete, AC 9).
+    // Each rename/(de)activation is recorded with old → new (AC 8, pass-3
+    // review fix): a qualifier rename steers how pasted/auto-read instrument
+    // text is interpreted from then on, so "who changed it, from what" must
+    // be answerable.
+    const listLabel = list === "resultQualifiers" ? "result qualifier" : "sample type";
+    const changes: string[] = [];
     for (const item of edit.items) {
       const existing = current.find((c) => c.id === item.id);
       if (existing) {
+        if (existing.name !== item.name.trim()) {
+          changes.push(`${listLabel} "${existing.name}" renamed to "${item.name.trim()}"`);
+        }
+        if (existing.active !== item.active) {
+          changes.push(`${listLabel} "${item.name.trim()}" ${item.active ? "activated" : "deactivated"}`);
+        }
         existing.name = item.name.trim();
         existing.active = item.active;
       }
@@ -135,34 +186,61 @@ export const mockSettingsApi: SettingsApi = {
     if (newName) {
       // Stable-ish id without Date.now() collisions within one save.
       current.push({ id: `${list}-${current.length}-${newName.toLowerCase()}`, name: newName, active: true });
+      changes.push(`${listLabel} "${newName}" added`);
     }
+    if (changes.length > 0) logSettingsEvent(orgId, actorEmail, changes.join("; "));
     return { status: "success" };
   },
 
-  async updateBarcode(orgId, barcode): Promise<SettingsActionResult> {
+  async updateBarcode(orgId, barcode, actorEmail): Promise<SettingsActionResult> {
     const error =
       inRange(barcode.widthMm, 20, 150, "Label width") ??
       inRange(barcode.heightMm, 10, 100, "Label height");
     if (error) return { status: "error", message: error };
-    getOrgSettings(orgId).barcode = barcode;
+    const settings = getOrgSettings(orgId);
+    const changes = diffFields([
+      ["width (mm)", settings.barcode.widthMm, barcode.widthMm],
+      ["height (mm)", settings.barcode.heightMm, barcode.heightMm],
+      ["show customer", settings.barcode.showCustomer, barcode.showCustomer],
+      ["show sample type", settings.barcode.showSampleType, barcode.showSampleType],
+      ["show job number", settings.barcode.showJobNumber, barcode.showJobNumber],
+      ["show date", settings.barcode.showDate, barcode.showDate],
+    ]);
+    settings.barcode = barcode;
+    if (changes.length > 0) logSettingsEvent(orgId, actorEmail, `Barcode label settings: ${changes.join("; ")}`);
     return { status: "success" };
   },
 
-  async updateEquipmentSettings(orgId, equipment): Promise<SettingsActionResult> {
+  async updateEquipmentSettings(orgId, equipment, actorEmail): Promise<SettingsActionResult> {
     // US-B3 AC 6: the "due soon" window is a warning horizon, not a block —
     // but it must stay a sane whole number of days.
     const error = inRange(equipment.calibrationWarningDays, 1, 365, "Calibration warning window");
     if (error) return { status: "error", message: error };
-    getOrgSettings(orgId).equipment = equipment;
+    const settings = getOrgSettings(orgId);
+    const changes = diffFields([
+      ["calibration warning window (days)", settings.equipment.calibrationWarningDays, equipment.calibrationWarningDays],
+    ]);
+    settings.equipment = equipment;
+    if (changes.length > 0) logSettingsEvent(orgId, actorEmail, `Equipment settings: ${changes.join("; ")}`);
     return { status: "success" };
   },
 
-  async updateLabSettings(orgId, labId, settings): Promise<SettingsActionResult> {
+  async updateLabSettings(orgId, labId, settings, actorEmail): Promise<SettingsActionResult> {
     const lab = mockDb.labs.get(labId);
     if (!lab || lab.orgId !== orgId) return { status: "error", message: "Unknown lab." };
     // AC 6: takes effect immediately (enforced via US-A4/US-D6 checks).
+    // Old → new recorded per toggle (AC 8, pass-3 review fix): whether e.g.
+    // "reviewer must differ" was ON when a given batch was reviewed — and who
+    // flipped it — must be provable afterwards.
+    const changes = diffFields([
+      ["analysts may create batches", lab.analystsMayCreateBatches, settings.analystsMayCreateBatches],
+      ["reviewer must differ from performer", lab.reviewerMustDiffer, settings.reviewerMustDiffer],
+    ]);
     lab.analystsMayCreateBatches = settings.analystsMayCreateBatches;
     lab.reviewerMustDiffer = settings.reviewerMustDiffer;
+    if (changes.length > 0) {
+      logSettingsEvent(orgId, actorEmail, `Lab "${lab.name}" settings: ${changes.join("; ")}`);
+    }
     return { status: "success" };
   },
 };

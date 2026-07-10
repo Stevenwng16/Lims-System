@@ -3,6 +3,7 @@
 import { useEffect, useMemo, useState } from "react";
 import { useActionState } from "react";
 import type { BulkPreviewCell, GridCell, ResultsGrid } from "@/lib/batches";
+import { parseClipboardBlock } from "@/lib/batches/import-parse";
 import type { MockMeasurementRecord, ResultValue } from "@/lib/mock-db";
 import { ImportDialog, type ImportConfigOption } from "./import-dialog";
 import {
@@ -125,6 +126,11 @@ function CellDialog({
             <input type="hidden" name="targetId" value={row.targetId} />
             <input type="hidden" name="analyteId" value={column.analyteId} />
             <input type="hidden" name="valueKind" value={wireKind} />
+            {/* The record this dialog shows as current ("" = empty cell): the
+                server anchors the write to it, so a concurrent entry by a
+                colleague refuses instead of silently chaining the correction
+                reason onto a value the user never saw (pass-3 review fix). */}
+            <input type="hidden" name="expectedCurrentRecordId" value={cell?.current?.id ?? ""} />
             {(kind === "censored-lt" || kind === "censored-gt") && (
               <input type="hidden" name="qualifier" value={kind === "censored-lt" ? "<" : ">"} />
             )}
@@ -281,23 +287,46 @@ function PasteDialog({
   const [confirmState, confirmSubmit, confirmPending] = useActionState(confirmPasteAction, initialBulk);
   const [block, setBlock] = useState("");
   const [startRow, setStartRow] = useState("0");
+  // The entries the LAST preview was requested for: the confirm form only
+  // carries the staging token (the server writes exactly the staged preview,
+  // pass-3 review fix), so when block/start row diverge afterwards the
+  // Confirm is disabled with a re-preview hint instead of quietly writing
+  // the earlier block.
+  const [previewedJson, setPreviewedJson] = useState<string | null>(null);
 
   useEffect(() => {
     if (confirmState.success) onDone();
   }, [confirmState, onDone]);
 
   // The client only maps POSITIONS (which cell each token lands in); every
-  // value is parsed and validated server-side (AC 5).
-  const entriesJson = useMemo(() => {
-    const lines = block.split(/\r?\n/).filter((l) => l.trim() !== "");
+  // value is parsed and validated server-side (AC 5). Tokenized with the
+  // strict quote-aware scanner: spreadsheets wrap cells containing tabs/
+  // newlines/quotes in RFC 4180 quotes on the clipboard, and a blind split
+  // would shift every later value onto the wrong sample/analyte (pass-3
+  // review fix). Interior blank lines are KEPT as rows of the rectangle —
+  // filtering them shifted all following rows one sample up (pass-3 fix).
+  const parsedBlock = useMemo(
+    () => (block.trim() === "" ? null : parseClipboardBlock(block)),
+    [block],
+  );
+  const blockError = parsedBlock && "error" in parsedBlock ? parsedBlock.error : null;
+  const { entriesJson, droppedValues } = useMemo(() => {
+    if (!parsedBlock || "error" in parsedBlock) return { entriesJson: "[]", droppedValues: 0 };
     const start = Number(startRow);
     const entries: { targetType: string; targetId: string; analyteId: string; raw: string }[] = [];
-    lines.forEach((line, r) => {
+    // Values falling past the grid edge are COUNTED and surfaced, never
+    // silently discarded (pass-3 review fix): a wrong start-row pick used to
+    // vanish trailing rows without a trace.
+    let dropped = 0;
+    parsedBlock.rows.forEach((cells, r) => {
       const row = grid.rows[start + r];
-      if (!row) return;
-      line.split("\t").forEach((token, c) => {
+      cells.forEach((token, c) => {
+        if (token.trim() === "") return; // empty cells carry no value
         const column = grid.columns[c];
-        if (!column || token.trim() === "") return;
+        if (!row || !column) {
+          dropped += 1;
+          return;
+        }
         entries.push({
           targetType: row.targetType,
           targetId: row.targetId,
@@ -306,8 +335,8 @@ function PasteDialog({
         });
       });
     });
-    return JSON.stringify(entries);
-  }, [block, startRow, grid]);
+    return { entriesJson: JSON.stringify(entries), droppedValues: dropped };
+  }, [parsedBlock, startRow, grid]);
 
   return (
     <Dialog open onOpenChange={(o) => !o && !previewPending && !confirmPending && onDone()}>
@@ -345,10 +374,26 @@ function PasteDialog({
             className="min-h-28 font-mono text-xs"
             aria-label="Pasted block"
           />
-          <form action={previewSubmit}>
+          {blockError && (
+            <Alert variant="destructive">
+              <AlertDescription>{blockError}</AlertDescription>
+            </Alert>
+          )}
+          {droppedValues > 0 && (
+            <p className="text-xs text-amber-700 dark:text-amber-400">
+              ⚠ {droppedValues} value(s) fall outside the grid (below the last row or past the
+              last analyte column) and are NOT part of this paste — check the start row.
+            </p>
+          )}
+          <form action={previewSubmit} onSubmit={() => setPreviewedJson(entriesJson)}>
             <input type="hidden" name="batchId" value={batchId} />
             <input type="hidden" name="entriesJson" value={entriesJson} />
-            <Button type="submit" size="sm" variant="outline" disabled={previewPending || block.trim() === ""}>
+            <Button
+              type="submit"
+              size="sm"
+              variant="outline"
+              disabled={previewPending || block.trim() === "" || !!blockError}
+            >
               {previewPending ? "Parsing…" : "Preview"}
             </Button>
           </form>
@@ -357,12 +402,20 @@ function PasteDialog({
               <AlertDescription>{previewState.error}</AlertDescription>
             </Alert>
           )}
-          {previewState.preview && (
+          {previewState.preview && previewState.token && (
             <>
               <PreviewTable cells={previewState.preview} columns={grid.columns} />
+              {previewedJson !== entriesJson && (
+                <p className="text-xs text-amber-700 dark:text-amber-400">
+                  ⚠ The block or start row changed after this preview — preview again before
+                  confirming (the confirm writes exactly what was previewed).
+                </p>
+              )}
               <form action={confirmSubmit} className="space-y-2">
                 <input type="hidden" name="batchId" value={batchId} />
-                <input type="hidden" name="entriesJson" value={entriesJson} />
+                {/* Only the staging token travels: the server writes exactly
+                    the staged preview or refuses (pass-3 review fix). */}
+                <input type="hidden" name="token" value={previewState.token} />
                 {confirmState.error && (
                   <Alert variant="destructive">
                     <AlertDescription>{confirmState.error}</AlertDescription>
@@ -370,7 +423,11 @@ function PasteDialog({
                 )}
                 <Button
                   type="submit"
-                  disabled={confirmPending || !previewState.preview.some((c) => c.outcome.kind === "accepted")}
+                  disabled={
+                    confirmPending ||
+                    previewedJson !== entriesJson ||
+                    !previewState.preview.some((c) => c.outcome.kind === "accepted")
+                  }
                 >
                   {confirmPending
                     ? "Writing…"
@@ -418,7 +475,7 @@ function WorksheetReadDialog({ batchId, grid, onDone }: { batchId: string; grid:
               <AlertDescription>{previewState.error}</AlertDescription>
             </Alert>
           )}
-          {previewState.preview && (
+          {previewState.preview && previewState.token && (
             <>
               {(previewState.notices ?? []).map((n) => (
                 <p key={n} className="text-xs text-amber-700 dark:text-amber-400">
@@ -428,6 +485,11 @@ function WorksheetReadDialog({ batchId, grid, onDone }: { batchId: string; grid:
               <PreviewTable cells={previewState.preview} columns={grid.columns} />
               <form action={confirmSubmit} className="space-y-2">
                 <input type="hidden" name="batchId" value={batchId} />
+                {/* Pins the confirm to the previewed worksheet version and
+                    outcome set — a replacement upload or grid change in the
+                    window refuses instead of silently writing values the
+                    user never reviewed (pass-3 review fix). */}
+                <input type="hidden" name="token" value={previewState.token} />
                 {confirmState.error && (
                   <Alert variant="destructive">
                     <AlertDescription>{confirmState.error}</AlertDescription>

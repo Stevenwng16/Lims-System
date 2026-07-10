@@ -15,13 +15,22 @@ import {
 } from "@/lib/batches";
 import { resolveOrgContext } from "@/lib/auth/context";
 
-export type BatchFormState = { error?: string; success?: boolean };
+export type BatchFormState = {
+  error?: string;
+  success?: boolean;
+  /** Informational follow-up on success (e.g. the AC 14 auto-read outcome
+   * after a worksheet upload — pass-3 review fix). */
+  notice?: string;
+};
 export type BulkFormState = {
   error?: string;
   success?: boolean;
   preview?: BulkPreviewCell[];
   notices?: string[];
   worksheetVersion?: number;
+  /** One-use staging token — the confirm applies exactly the staged preview
+   * or refuses (pass-3 review fix, mirroring the import contract). */
+  token?: string;
 };
 export type ImportFormState = {
   error?: string;
@@ -156,7 +165,9 @@ export async function uploadWorksheetAction(
   const result = await batchApi.uploadWorksheet(actor, batchId, { fileName: file.name, bytes });
   if (result.status === "error") return { error: result.message };
   revalidatePath(`/batches/${batchId}`);
-  return { success: true };
+  // AC 14: surface the auto-read outcome at upload — either the pending-
+  // preview prompt or the missing/mismatching-sheet notice (pass-3 fix).
+  return { success: true, notice: result.autoRead?.message };
 }
 
 function parseResultValueInput(formData: FormData): ResultValueInput {
@@ -186,6 +197,7 @@ export async function enterResultAction(
 ): Promise<BatchFormState> {
   const actor = await resolveBatchActor();
   const batchId = String(formData.get("batchId") ?? "");
+  const expectedCurrent = String(formData.get("expectedCurrentRecordId") ?? "");
   const result = await batchApi.enterResult(
     actor,
     batchId,
@@ -196,6 +208,9 @@ export async function enterResultAction(
     String(formData.get("analyteId") ?? ""),
     parseResultValueInput(formData),
     String(formData.get("supersedeReason") ?? ""),
+    // The record the dialog showed as current; "" = the user saw an empty
+    // cell. Anchors the correction against concurrent writes (pass-3 fix).
+    expectedCurrent === "" ? null : expectedCurrent,
   );
   if (result.status === "error") return { error: result.message };
   revalidatePath(`/batches/${batchId}`);
@@ -230,7 +245,7 @@ export async function previewPasteAction(
   if (!entries) return { error: "The pasted block could not be read — try again." };
   const result = await batchApi.previewBulk(actor, String(formData.get("batchId") ?? ""), entries);
   if (result.status === "error") return { error: result.message };
-  return { preview: result.cells };
+  return { preview: result.cells, token: result.token };
 }
 
 export async function confirmPasteAction(
@@ -239,9 +254,10 @@ export async function confirmPasteAction(
 ): Promise<BulkFormState> {
   const actor = await resolveBatchActor();
   const batchId = String(formData.get("batchId") ?? "");
-  const entries = parseBulkEntries(formData);
-  if (!entries) return { error: "The pasted block could not be read — try again." };
-  const result = await batchApi.confirmBulk(actor, batchId, entries);
+  // Only the staging token travels: the confirm writes EXACTLY the staged
+  // preview or refuses — a post-preview client-side edit can never reach the
+  // records (pass-3 review fix).
+  const result = await batchApi.confirmBulk(actor, batchId, String(formData.get("token") ?? ""));
   if (result.status === "error") return { error: result.message };
   revalidatePath(`/batches/${batchId}`);
   return { success: true };
@@ -254,7 +270,12 @@ export async function previewWorksheetAction(
   const actor = await resolveBatchActor();
   const result = await batchApi.previewWorksheet(actor, String(formData.get("batchId") ?? ""));
   if (result.status === "error") return { error: result.message };
-  return { preview: result.cells, notices: result.notices, worksheetVersion: result.worksheetVersion };
+  return {
+    preview: result.cells,
+    notices: result.notices,
+    worksheetVersion: result.worksheetVersion,
+    token: result.token,
+  };
 }
 
 export async function confirmWorksheetAction(
@@ -263,8 +284,9 @@ export async function confirmWorksheetAction(
 ): Promise<BulkFormState> {
   const actor = await resolveBatchActor();
   const batchId = String(formData.get("batchId") ?? "");
-  // The server re-reads the worksheet itself — nothing client-supplied here.
-  const result = await batchApi.confirmWorksheet(actor, batchId);
+  // The server re-reads the worksheet itself; the token pins the confirm to
+  // the previewed version + outcomes (pass-3 review fix).
+  const result = await batchApi.confirmWorksheet(actor, batchId, String(formData.get("token") ?? ""));
   if (result.status === "error") return { error: result.message };
   revalidatePath(`/batches/${batchId}`);
   return { success: true };
@@ -517,6 +539,9 @@ export async function replaceResultAction(
     String(formData.get("analyteId") ?? ""),
     parseResultValueInput(formData),
     String(formData.get("replaceReason") ?? ""),
+    // The record the dialog showed as "Current" — overlapping replacements
+    // refuse instead of silently chaining onto each other (pass-3 fix).
+    String(formData.get("expectedCurrentRecordId") ?? ""),
   );
   if (result.status === "error") return { error: result.message };
   revalidatePath(`/batches/${batchId}`);

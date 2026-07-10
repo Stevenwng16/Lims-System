@@ -84,6 +84,17 @@ export type OrgSettings = {
     // per organisation, invariant 7; default 30 days).
     calibrationWarningDays: number;
   };
+  // Append-only audit of settings changes (US-A7 AC 8: every change with old
+  // and new values — pass-3 review fix; previously nothing recorded who
+  // flipped e.g. the reviewer-segregation toggle or renamed a qualifier).
+  settingsEvents: SettingsEvent[];
+};
+
+export type SettingsEvent = {
+  id: string;
+  at: string; // ISO
+  by: string; // acting user (invariant 6)
+  summary: string; // "what: old → new", lab named for per-lab settings
 };
 
 export function defaultOrgSettings(): OrgSettings {
@@ -120,6 +131,7 @@ export function defaultOrgSettings(): OrgSettings {
     equipment: {
       calibrationWarningDays: 30,
     },
+    settingsEvents: [],
   };
 }
 
@@ -285,9 +297,27 @@ export type MockJob = {
 // true forever — no code path may ever reset it (hard-never list: a set-back
 // never reopens composition). US-D3 owns steps/void, US-D4 data, US-D6 review.
 
+// The expectation context FROZEN when the material entered the batch (pass-3
+// review fix): US-B2 AC 7 promises "existing batch QC records keep the exact
+// values they were checked against", and US-D6 AC 1 shows the reviewer the
+// exact lot's expectation — a live lookup would silently rewrite the review
+// context whenever the masterdata is corrected afterwards. Snapshot taken at
+// FIRST addition and never refreshed (quantity edits don't re-snapshot).
+export type QcExpectationsSnapshot = {
+  type: QcType;
+  lotNumber: string;
+  expectedValues: {
+    analyteName: string;
+    unit: string | null;
+    expectedValue: string; // decimal STRING (hard rule)
+    tolerance: QcTolerance;
+  }[];
+};
+
 export type BatchQcEntry = {
   materialId: string; // the material at its specific lot (US-B2 AC 7)
   quantity: number; // ≥1; each unit occupies a position (AC 6/7)
+  expectations: QcExpectationsSnapshot; // frozen at addition (see above)
 };
 
 // Import configurations (US-D5 AC 1) — lab-level masterdata: which column
@@ -298,6 +328,17 @@ export type ImportColumnMapping = {
   header: string; // column header in the file
   analyteName: string; // matched to the method analyte by name (ci)
   unit: string | null; // must EQUAL the method analyte's unit (US-D5 AC 6)
+};
+
+// Append-only change history per configuration (pass-3 review fix): US-D5
+// AC 1 says config changes are "audited with before/after" — same per-entity
+// event-list convention as batches and equipment (the real backend mirrors
+// these into the org-wide audit log, invariant 1).
+export type MockConfigEvent = {
+  id: string;
+  at: string; // ISO
+  by: string;
+  summary: string; // "field: old → new" on edits; reasons on status changes
 };
 
 export type MockImportConfig = {
@@ -318,6 +359,9 @@ export type MockImportConfig = {
   csvDelimiter: "comma" | "semicolon" | "tab"; // declared (decision 4 Jul 2026)
   status: "active" | "inactive";
   statusReason?: string;
+  createdAt: string; // attribution (invariant 6 — pass-3 review fix)
+  createdBy: string;
+  events: MockConfigEvent[]; // append-only (see MockConfigEvent)
 };
 
 // The import event (US-D5 AC 8, decision 4 Jul 2026): ONE self-contained
@@ -331,10 +375,16 @@ export type ImportCellOutcome = {
 };
 
 export type ImportRowOutcome = {
-  rowNumber: number; // 1-based data row in the file
+  // PHYSICAL row in the file (header = row 1, blank rows counted), so the
+  // stored outcome points at the row an auditor sees when opening the stored
+  // original file — not at a blank-filtered sequence (pass-3 review fix).
+  rowNumber: number;
   idCell: string;
   matched: string | null; // "sample:<id>" / "qc:<materialId>" / null
-  outcome: "imported" | "skipped" | "rejected";
+  // "kept-existing": the row was processed but every non-empty cell hit an
+  // existing value the user kept (the AC 7 default) — calling that "rejected"
+  // misstated the disposition in the immutable event (pass-3 review fix).
+  outcome: "imported" | "skipped" | "rejected" | "kept-existing";
   reason: string; // skip/rejection reason, "" when imported
   cells: ImportCellOutcome[];
 };
@@ -398,6 +448,12 @@ export type MockMeasurementRecord = {
   // replacement (conservative in the MVP; epic F refines to real
   // issued-report linkage). The batch-level flag is DERIVED from these.
   amendmentCheckRequired: boolean;
+  // True for records created BY the reviewer acting in reviewer capacity
+  // (no-result gap closure, post-completion replacement). The US-D6 AC 2
+  // segregation check must not count these as "performing analyst" work, or
+  // a reviewer's first gap closure would lock them out of their own review
+  // (pass-3 review fix).
+  reviewAct: boolean;
 };
 
 // One list is the whole workflow history (US-D3 decision 3 Jul 2026): every
@@ -646,8 +702,35 @@ export type MockDb = {
       // config no longer matches, so what is applied is provably what the
       // user saw (US-D5 AC 3 — review fix, pass 2).
       configJson: string;
+      // The per-row match set EXACTLY as previewed (rowNumber → kind:target):
+      // confirm refuses when a composition edit in the staging window changes
+      // any row's match — otherwise an explicitly skipped row could import
+      // silently, or a mapped row could land elsewhere (pass-3 review fix).
+      matchesJson: string;
+      // The conflict set EXACTLY as previewed (cellKey → existing record id):
+      // replace decisions apply only to conflicts the user actually saw, and
+      // any occupancy drift on previewed rows refuses (pass-3 review fix).
+      conflictsJson: string;
       fileName: string;
       bytes: Uint8Array;
+      createdAt: number;
+    }
+  >;
+  // EPHEMERAL staging for paste (US-D4 AC 13) and worksheet auto-read (AC 14)
+  // confirms — same one-token contract as pendingImports (pass-3 review fix):
+  // confirm applies EXACTLY the staged preview or refuses, so a post-preview
+  // edit, a concurrent entry or a qualifier-list change can never make the
+  // confirm write something the user did not review.
+  pendingBulk: Map<
+    string,
+    {
+      orgId: string;
+      actorEmail: string; // the previewer confirms — attribution stays honest
+      batchId: string;
+      kind: "paste" | "worksheet";
+      entriesJson: string; // the raw entries previewed
+      outcomesJson: string; // the per-cell verdicts previewed (divergence check)
+      worksheetVersion: number | null; // worksheet kind: the version previewed
       createdAt: number;
     }
   >;
@@ -1498,7 +1581,22 @@ function seedDb(): MockDb {
     compositionLatched: true,
     assignee: null,
     sampleIds: ["MET26-00004.001"],
-    qc: [{ materialId: "qc-cs1", quantity: 1 }],
+    qc: [
+      {
+        materialId: "qc-cs1",
+        quantity: 1,
+        // Frozen when the material entered the batch (pass-3 review fix) —
+        // mirrors the qc-cs1 material seed at that moment.
+        expectations: {
+          type: "control-standard",
+          lotNumber: "MM-2026-A",
+          expectedValues: [
+            { analyteName: "Pb", unit: "mg/L", expectedValue: "5.0", tolerance: { kind: "absolute", value: "0.3" } },
+            { analyteName: "Cd", unit: "mg/L", expectedValue: "2.0", tolerance: { kind: "percent", value: "5" } },
+          ],
+        },
+      },
+    ],
     workingCopy: {
       fileName: "working_copy_METB26-0001.csv",
       sizeBytes: 512,
@@ -1525,14 +1623,18 @@ function seedDb(): MockDb {
       { id: "bev-1-s4", at: "2026-06-24T14:00:00.000Z", by: "labmanager@demolab.nl", type: "step-completed", summary: "Step 4 \"Review\" completed", step: { index: 3, id: "s4", name: "Review" } },
       { id: "bev-1-ws", at: "2026-06-24T15:40:00.000Z", by: "analyst@demolab.nl", type: "worksheet-uploaded", summary: "Completed worksheet v1: worksheet_METB26-0001_completed.xlsx" },
       { id: "bev-1-s5", at: "2026-06-24T16:00:00.000Z", by: "labmanager@demolab.nl", type: "step-completed", summary: "Step 5 \"Report\" completed — batch moved to Awaiting review", step: { index: 4, id: "s5", name: "Report" } },
-      { id: "bev-1-done", at: "2026-06-24T16:30:00.000Z", by: "labmanager@demolab.nl", type: "batch-completed", summary: "Batch completed — 3 result(s) valid, 0 rejected (review approval)" },
+      { id: "bev-1-done", at: "2026-06-24T16:30:00.000Z", by: "labmanager@demolab.nl", type: "batch-completed", summary: "Batch completed — 4 result(s) valid, 0 rejected (review approval)" },
     ],
     // Reviewed results (validity set by review — US-D6's transition, seeded
-    // here so the completed demo batch is coherent).
+    // here so the completed demo batch is coherent). Every (sample × analyte)
+    // cell of the pinned version (a1 Pb, a2 Cd, a3 Zn) holds a valid record —
+    // a completed batch with an unaccounted sample cell would contradict the
+    // AC 4/6 completion gate the code enforces (pass-3 review fix).
     results: [
-      { id: "res-b1-1", targetType: "sample", targetId: "MET26-00004.001", analyteId: "a1", methodId: "m-icpms", methodVersion: 1, value: { kind: "numeric", value: "0.042" }, origin: "manual", worksheetVersion: null, importEventId: null, enteredBy: "analyst@demolab.nl", enteredAt: "2026-06-23T13:00:00.000Z", supersedes: null, supersedeReason: null, validity: "valid", validitySetBy: "labmanager@demolab.nl", validitySetAt: "2026-06-24T16:00:00.000Z", validityReason: null, amendmentCheckRequired: false },
-      { id: "res-b1-2", targetType: "sample", targetId: "MET26-00004.001", analyteId: "a2", methodId: "m-icpms", methodVersion: 1, value: { kind: "censored", qualifier: "<", boundary: "0.005" }, origin: "manual", worksheetVersion: null, importEventId: null, enteredBy: "analyst@demolab.nl", enteredAt: "2026-06-23T13:01:00.000Z", supersedes: null, supersedeReason: null, validity: "valid", validitySetBy: "labmanager@demolab.nl", validitySetAt: "2026-06-24T16:00:00.000Z", validityReason: null, amendmentCheckRequired: false },
-      { id: "res-b1-3", targetType: "qc", targetId: "qc-cs1", analyteId: "a1", methodId: "m-icpms", methodVersion: 1, value: { kind: "numeric", value: "5.1" }, origin: "manual", worksheetVersion: null, importEventId: null, enteredBy: "analyst@demolab.nl", enteredAt: "2026-06-23T13:02:00.000Z", supersedes: null, supersedeReason: null, validity: "valid", validitySetBy: "labmanager@demolab.nl", validitySetAt: "2026-06-24T16:00:00.000Z", validityReason: null, amendmentCheckRequired: false },
+      { id: "res-b1-1", targetType: "sample", targetId: "MET26-00004.001", analyteId: "a1", methodId: "m-icpms", methodVersion: 1, value: { kind: "numeric", value: "0.042" }, origin: "manual", worksheetVersion: null, importEventId: null, enteredBy: "analyst@demolab.nl", enteredAt: "2026-06-23T13:00:00.000Z", supersedes: null, supersedeReason: null, validity: "valid", validitySetBy: "labmanager@demolab.nl", validitySetAt: "2026-06-24T16:00:00.000Z", validityReason: null, amendmentCheckRequired: false, reviewAct: false },
+      { id: "res-b1-2", targetType: "sample", targetId: "MET26-00004.001", analyteId: "a2", methodId: "m-icpms", methodVersion: 1, value: { kind: "censored", qualifier: "<", boundary: "0.005" }, origin: "manual", worksheetVersion: null, importEventId: null, enteredBy: "analyst@demolab.nl", enteredAt: "2026-06-23T13:01:00.000Z", supersedes: null, supersedeReason: null, validity: "valid", validitySetBy: "labmanager@demolab.nl", validitySetAt: "2026-06-24T16:00:00.000Z", validityReason: null, amendmentCheckRequired: false, reviewAct: false },
+      { id: "res-b1-4", targetType: "sample", targetId: "MET26-00004.001", analyteId: "a3", methodId: "m-icpms", methodVersion: 1, value: { kind: "numeric", value: "3.1" }, origin: "manual", worksheetVersion: null, importEventId: null, enteredBy: "analyst@demolab.nl", enteredAt: "2026-06-23T13:01:30.000Z", supersedes: null, supersedeReason: null, validity: "valid", validitySetBy: "labmanager@demolab.nl", validitySetAt: "2026-06-24T16:00:00.000Z", validityReason: null, amendmentCheckRequired: false, reviewAct: false },
+      { id: "res-b1-3", targetType: "qc", targetId: "qc-cs1", analyteId: "a1", methodId: "m-icpms", methodVersion: 1, value: { kind: "numeric", value: "5.1" }, origin: "manual", worksheetVersion: null, importEventId: null, enteredBy: "analyst@demolab.nl", enteredAt: "2026-06-23T13:02:00.000Z", supersedes: null, supersedeReason: null, validity: "valid", validitySetBy: "labmanager@demolab.nl", validitySetAt: "2026-06-24T16:00:00.000Z", validityReason: null, amendmentCheckRequired: false, reviewAct: false },
     ],
     createdAt: "2026-06-21T09:00:00.000Z",
     createdBy: "labmanager@demolab.nl",
@@ -1549,7 +1651,15 @@ function seedDb(): MockDb {
     compositionLatched: true,
     assignee: "analyst@demolab.nl", // US-D2 demo: claimed by Sam Analyst
     sampleIds: ["MET26-00003.001"],
-    qc: [{ materialId: "qc-blk", quantity: 2 }],
+    qc: [
+      {
+        materialId: "qc-blk",
+        quantity: 2,
+        // Blanks carry no numeric target (below-LOQ is judged against the
+        // method's reporting limit); the snapshot still pins type + lot.
+        expectations: { type: "blank", lotNumber: "", expectedValues: [] },
+      },
+    ],
     workingCopy: {
       fileName: "working_copy_METB26-0002.csv",
       sizeBytes: 498,
@@ -1569,8 +1679,8 @@ function seedDb(): MockDb {
     // Correction-chain demo (AC 8): the first value stays, superseded with a
     // reason; the grid shows 12.4 with the ⟳ indicator.
     results: [
-      { id: "res-b2-1", targetType: "sample", targetId: "MET26-00003.001", analyteId: "a1", methodId: "m-icpms", methodVersion: 1, value: { kind: "numeric", value: "12.9" }, origin: "manual", worksheetVersion: null, importEventId: null, enteredBy: "analyst@demolab.nl", enteredAt: "2026-06-29T14:00:00.000Z", supersedes: null, supersedeReason: null, validity: "pending", validitySetBy: null, validitySetAt: null, validityReason: null, amendmentCheckRequired: false },
-      { id: "res-b2-2", targetType: "sample", targetId: "MET26-00003.001", analyteId: "a1", methodId: "m-icpms", methodVersion: 1, value: { kind: "numeric", value: "12.4" }, origin: "manual", worksheetVersion: null, importEventId: null, enteredBy: "analyst@demolab.nl", enteredAt: "2026-06-29T16:20:00.000Z", supersedes: "res-b2-1", supersedeReason: "transcription error, worksheet says 12.4", validity: "pending", validitySetBy: null, validitySetAt: null, validityReason: null, amendmentCheckRequired: false },
+      { id: "res-b2-1", targetType: "sample", targetId: "MET26-00003.001", analyteId: "a1", methodId: "m-icpms", methodVersion: 1, value: { kind: "numeric", value: "12.9" }, origin: "manual", worksheetVersion: null, importEventId: null, enteredBy: "analyst@demolab.nl", enteredAt: "2026-06-29T14:00:00.000Z", supersedes: null, supersedeReason: null, validity: "pending", validitySetBy: null, validitySetAt: null, validityReason: null, amendmentCheckRequired: false, reviewAct: false },
+      { id: "res-b2-2", targetType: "sample", targetId: "MET26-00003.001", analyteId: "a1", methodId: "m-icpms", methodVersion: 1, value: { kind: "numeric", value: "12.4" }, origin: "manual", worksheetVersion: null, importEventId: null, enteredBy: "analyst@demolab.nl", enteredAt: "2026-06-29T16:20:00.000Z", supersedes: "res-b2-1", supersedeReason: "transcription error, worksheet says 12.4", validity: "pending", validitySetBy: null, validitySetAt: null, validityReason: null, amendmentCheckRequired: false, reviewAct: false },
     ],
     createdAt: "2026-06-28T10:15:00.000Z",
     createdBy: "labmanager@demolab.nl",
@@ -1600,6 +1710,11 @@ function seedDb(): MockDb {
     decimalSeparator: "comma",
     csvDelimiter: "semicolon",
     status: "active",
+    createdAt: "2026-06-20T09:00:00.000Z",
+    createdBy: "labmanager@demolab.nl",
+    events: [
+      { id: "impev-w-1", at: "2026-06-20T09:00:00.000Z", by: "labmanager@demolab.nl", summary: "Configuration created (wide, CSV, semicolon delimiter, comma decimal separator)" },
+    ],
   });
   importConfigs.set("imp-icp-long", {
     id: "imp-icp-long",
@@ -1620,6 +1735,11 @@ function seedDb(): MockDb {
     decimalSeparator: "point",
     csvDelimiter: "comma",
     status: "active",
+    createdAt: "2026-06-20T09:05:00.000Z",
+    createdBy: "labmanager@demolab.nl",
+    events: [
+      { id: "impev-l-1", at: "2026-06-20T09:05:00.000Z", by: "labmanager@demolab.nl", summary: "Configuration created (long, CSV, comma delimiter, point decimal separator)" },
+    ],
   });
 
   // Counters consistent with the seed (5 Metals jobs in 2026; sample seq per job).
@@ -1645,11 +1765,15 @@ function seedDb(): MockDb {
     batchFiles,
     importConfigs,
     pendingImports: new Map(),
+    pendingBulk: new Map(),
     sequences,
   };
 }
 
-export const mockDb: MockDb = ((globalThis as Record<string, unknown>).__limsMockDbV22 ??=
+// V23: pass-3 review — QC expectation snapshots on batch QC entries, reviewAct
+// flag on measurement records, config attribution/events, settingsEvents,
+// pendingBulk staging, seed batch METB26-0001 completion-gate coherence.
+export const mockDb: MockDb = ((globalThis as Record<string, unknown>).__limsMockDbV23 ??=
   seedDb()) as MockDb;
 
 export function getOrgSettings(orgId: string): OrgSettings {
@@ -1662,6 +1786,7 @@ export function getOrgSettings(orgId: string): OrgSettings {
   // shape survives HMR on globalThis, so a missing section would otherwise
   // crash a long-running dev server until restart (dev-only concern).
   settings.equipment ??= defaultOrgSettings().equipment;
+  settings.settingsEvents ??= [];
   return settings;
 }
 
