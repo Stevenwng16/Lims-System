@@ -3,6 +3,7 @@
 import Link from "next/link";
 import { usePathname } from "next/navigation";
 import { FlaskConical } from "lucide-react";
+import { PRODUCT_NAME } from "@/lib/branding";
 import type { OrgRole } from "@/lib/permissions";
 import { adminNav, isActiveNav, mainNav, visibleNav } from "@/lib/navigation";
 import {
@@ -32,7 +33,7 @@ export function AppSidebar({ role }: { role: OrgRole | null }) {
         <div className="flex items-center gap-2 px-2 py-1.5">
           <FlaskConical className="size-5 shrink-0 text-primary" />
           <span className="text-lg font-semibold tracking-tight text-primary group-data-[collapsible=icon]:hidden">
-            LIMS
+            {PRODUCT_NAME}
           </span>
         </div>
       </SidebarHeader>

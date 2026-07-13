@@ -23,7 +23,7 @@ export async function generateMetadata() {
   const session = decodeSession(cookieStore.get(SESSION_COOKIE)?.value);
   const orgId = session ? getOrgIdByName(session.user.organisation) : null;
   const label = orgId ? getOrgSettings(orgId).jobLabel : "Job";
-  return { title: `${label}s — LIMS` };
+  return { title: `${label}s` };
 }
 
 // US-C2 Job overview — the post-login landing page (US-A3 AC 5). Read-only,

@@ -4,7 +4,7 @@ import { getOrgSettings } from "@/lib/mock-db";
 import { resolveJobActor } from "@/app/(app)/jobs/actions";
 import { LabelsPrint, type LabelData } from "./labels-print";
 
-export const metadata = { title: "Print labels — LIMS" };
+export const metadata = { title: "Print labels" };
 
 // US-C4 barcode printing. Deliberately OUTSIDE the (app) shell so the print
 // output is just the labels (no sidebar/header). Still behind auth via proxy.ts.

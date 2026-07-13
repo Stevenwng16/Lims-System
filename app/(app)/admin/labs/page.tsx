@@ -11,7 +11,7 @@ import {
 } from "@/components/ui/breadcrumb";
 import { LabsClient } from "./labs-client";
 
-export const metadata = { title: "Labs — LIMS" };
+export const metadata = { title: "Labs" };
 
 // Admin ▸ Labs (US-A5): list, create, edit, activate/deactivate. Labs are
 // never deleted (invariant 2).

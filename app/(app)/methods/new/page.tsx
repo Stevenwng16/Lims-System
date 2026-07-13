@@ -12,7 +12,7 @@ import {
 import { resolveMethodActor } from "../actions";
 import { MethodForm } from "../method-form";
 
-export const metadata = { title: "New method — LIMS" };
+export const metadata = { title: "New method" };
 
 export default async function NewMethodPage() {
   const actor = await resolveMethodActor();

@@ -15,7 +15,7 @@ import { resolveMethodActor } from "../actions";
 import { MethodForm } from "../method-form";
 import { MethodStatusForm, TemplateSection } from "./method-detail-client";
 
-export const metadata = { title: "Method — LIMS" };
+export const metadata = { title: "Method" };
 
 export default async function MethodDetailPage({
   params,

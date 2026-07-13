@@ -14,7 +14,7 @@ import {
 import { resolveBatchActor } from "../actions";
 import { NewBatchForm } from "./new-batch-client";
 
-export const metadata = { title: "New batch — LIMS" };
+export const metadata = { title: "New batch" };
 
 // US-D1 — assemble a batch in the ACTIVE lab: method (latest version pinned),
 // eligible samples, QC with quantities, live capacity counter. All rules are

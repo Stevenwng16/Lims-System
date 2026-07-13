@@ -14,7 +14,7 @@ import { BatchDetailClient } from "./batch-detail-client";
 
 export async function generateMetadata({ params }: { params: Promise<{ id: string }> }) {
   const { id } = await params;
-  return { title: `Batch ${id} — LIMS` };
+  return { title: `Batch ${id}` };
 }
 
 export default async function BatchDetailPage({ params }: { params: Promise<{ id: string }> }) {

@@ -3,7 +3,7 @@ import { resolveOrgContext } from "@/lib/auth/context";
 import { labApi } from "@/lib/labs";
 import { SetupForm } from "./setup-client";
 
-export const metadata = { title: "Set up your organisation — LIMS" };
+export const metadata = { title: "Set up your organisation" };
 
 // First-run setup (US-A2 AC 4; 13 Jul 2026 decision): a freshly provisioned
 // organisation has ZERO labs — the invited admin lands here (via "/") and

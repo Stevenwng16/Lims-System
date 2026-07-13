@@ -13,7 +13,7 @@ import {
 import { resolveActor } from "./actions";
 import { UsersClient } from "./users-client";
 
-export const metadata = { title: "Users — LIMS" };
+export const metadata = { title: "Users" };
 
 // Admin ▸ Users (US-A6). Admins see all users of the organisation; lab
 // managers only those in their own lab(s), and only Analyst/Read-only are

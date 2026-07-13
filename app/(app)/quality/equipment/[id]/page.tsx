@@ -17,7 +17,7 @@ export async function generateMetadata({ params }: { params: Promise<{ id: strin
   const { id } = await params;
   const actor = await resolveEquipmentActor();
   const detail = await equipmentApi.getEquipment(actor, id);
-  return { title: detail ? `${detail.record.assetId} — Equipment — LIMS` : "Equipment — LIMS" };
+  return { title: detail ? `${detail.record.assetId} — Equipment` : "Equipment" };
 }
 
 export default async function EquipmentDetailPage({

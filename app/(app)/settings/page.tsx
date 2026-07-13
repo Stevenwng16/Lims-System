@@ -13,7 +13,7 @@ import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/com
 import { requireAdminOrgId } from "./actions";
 import { SettingsClient } from "./settings-client";
 
-export const metadata = { title: "Settings — LIMS" };
+export const metadata = { title: "Settings" };
 
 // Admin ▸ Settings (US-A7): Security, Identifiers & labels, Lab settings.
 // Every value here was seeded with a safe default at provisioning (AC 1).

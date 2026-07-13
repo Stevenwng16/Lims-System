@@ -14,7 +14,7 @@ import {
 import { resolveJobActor } from "../actions";
 import { JobForm } from "../job-form";
 
-export const metadata = { title: "New job — LIMS" };
+export const metadata = { title: "New job" };
 
 export default async function NewJobPage() {
   const actor = await resolveJobActor();

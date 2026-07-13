@@ -10,7 +10,7 @@ import { platformApi } from "@/lib/platform";
 import { requireOrgAdmin } from "./actions";
 import { SupportAccessForm } from "./support-access-form";
 
-export const metadata = { title: "Support access — LIMS" };
+export const metadata = { title: "Support access" };
 
 // Customer side of US-A2 AC 8/9. Real Admin only (live-checked in
 // requireOrgAdmin) — grant management stays with the customer even during an

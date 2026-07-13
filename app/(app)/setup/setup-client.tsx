@@ -1,6 +1,7 @@
 "use client";
 
 import { useActionState } from "react";
+import { PRODUCT_NAME } from "@/lib/branding";
 import { createFirstLabAction, type SetupFormState } from "./actions";
 import { Alert, AlertDescription } from "@/components/ui/alert";
 import { Button } from "@/components/ui/button";
@@ -19,9 +20,9 @@ export function SetupForm({ organisationName }: { organisationName: string }) {
   return (
     <Card className="mx-auto max-w-xl">
       <CardHeader>
-        <CardTitle>Welcome to {organisationName}</CardTitle>
+        <CardTitle>Welcome to {PRODUCT_NAME}</CardTitle>
         <CardDescription>
-          Your organisation has no labs yet. Create your first lab to start working — everything
+          {organisationName} has no labs yet. Create your first lab to start working — everything
           in the system (users, methods, equipment, jobs, batches) is scoped to a lab.
         </CardDescription>
       </CardHeader>

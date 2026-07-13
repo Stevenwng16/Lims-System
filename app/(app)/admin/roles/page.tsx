@@ -19,7 +19,7 @@ import {
   TableRow,
 } from "@/components/ui/table";
 
-export const metadata = { title: "Roles & permissions — LIMS" };
+export const metadata = { title: "Roles & permissions" };
 
 const roleOrder: OrgRole[] = ["admin", "lab-manager", "analyst", "read-only"];
 

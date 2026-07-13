@@ -1,4 +1,5 @@
 import type { SessionUser } from "./auth/types";
+import { PRODUCT_NAME } from "./branding";
 
 // Single in-memory store behind all mock APIs (auth + platform), so state is
 // consistent across flows (e.g. suspending an org blocks its users' logins).
@@ -910,7 +911,7 @@ function seedDb(): MockDb {
     email: "vendor@lims.dev",
     events: [], // per-user audit trail (US-A6 AC 12 — pass-4 fix); fresh array per user
     name: "Vera Vendor",
-    organisation: "LIMS Platform",
+    organisation: `${PRODUCT_NAME} Platform`,
     role: "platform-admin",
     orgId: null,
     labs: [],
@@ -1876,7 +1877,7 @@ function cleanDb(): MockDb {
   users.set("vendor@lims.dev", {
     email: "vendor@lims.dev",
     name: "Vera Vendor",
-    organisation: "LIMS Platform",
+    organisation: `${PRODUCT_NAME} Platform`,
     role: "platform-admin",
     orgId: null,
     labs: [],

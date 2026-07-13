@@ -13,7 +13,7 @@ import {
 import { resolveBatchActor } from "../actions";
 import { ImportConfigsClient } from "./configs-client";
 
-export const metadata = { title: "Import configurations — LIMS" };
+export const metadata = { title: "Import configurations" };
 
 // US-D5 AC 1 — lab-level masterdata: Admin / Lab manager manage the mappings
 // instrument exports are read with. Scoped to the ACTIVE lab (work context).

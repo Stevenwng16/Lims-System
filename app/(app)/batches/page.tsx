@@ -13,7 +13,7 @@ import { Button } from "@/components/ui/button";
 import { resolveBatchActor } from "./actions";
 import { BatchQueue } from "./batches-client";
 
-export const metadata = { title: "Batches — LIMS" };
+export const metadata = { title: "Batches" };
 
 // US-D1 batch list — a work screen, scoped to the active lab (US-A3 AC 4).
 // US-D2 turns this into the prioritised work queue.

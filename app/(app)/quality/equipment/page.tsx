@@ -11,7 +11,7 @@ import {
 import { resolveEquipmentActor } from "./actions";
 import { EquipmentClient } from "./equipment-client";
 
-export const metadata = { title: "Equipment — LIMS" };
+export const metadata = { title: "Equipment" };
 
 // Quality ▸ Equipment (US-B3). All org roles view; Admin / Lab manager manage
 // within their labs; Analysts log routine checks. The availability state is

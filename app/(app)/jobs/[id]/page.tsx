@@ -26,7 +26,7 @@ export async function generateMetadata({ params }: { params: Promise<{ id: strin
   const session = decodeSession(cookieStore.get(SESSION_COOKIE)?.value);
   const orgId = session ? getOrgIdByName(session.user.organisation) : null;
   const label = orgId ? getOrgSettings(orgId).jobLabel : "Job";
-  return { title: `${label} ${id} — LIMS` };
+  return { title: `${label} ${id}` };
 }
 
 // AC 11 / AC 5: the History tab renders the job's REAL append-only audit

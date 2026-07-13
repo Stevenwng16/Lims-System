@@ -14,7 +14,7 @@ import {
 import { resolveJobActor } from "../../actions";
 import { JobForm } from "../../job-form";
 
-export const metadata = { title: "Edit job — LIMS" };
+export const metadata = { title: "Edit job" };
 
 // AC 12: edit job & sample details; the job number and sample IDs never change.
 export default async function EditJobPage({ params }: { params: Promise<{ id: string }> }) {

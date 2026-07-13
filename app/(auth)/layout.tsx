@@ -1,6 +1,7 @@
 // Plain, single-purpose screens — no navigation shell before authentication
 // (US-A1; the shell arrives with US-A3).
 import { ThemeToggle } from "@/components/theme-toggle";
+import { PRODUCT_NAME } from "@/lib/branding";
 
 export default function AuthLayout({ children }: { children: React.ReactNode }) {
   return (
@@ -8,7 +9,7 @@ export default function AuthLayout({ children }: { children: React.ReactNode }) 
       <div className="absolute top-4 right-4">
         <ThemeToggle />
       </div>
-      <div className="mb-8 text-2xl font-semibold tracking-tight text-primary">LIMS</div>
+      <div className="mb-8 text-2xl font-semibold tracking-tight text-primary">{PRODUCT_NAME}</div>
       <div className="w-full max-w-sm">{children}</div>
     </div>
   );

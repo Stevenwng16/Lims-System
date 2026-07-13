@@ -18,7 +18,7 @@ import {
 } from "@/components/ui/table";
 import { resolveMethodActor } from "./actions";
 
-export const metadata = { title: "Methods — LIMS" };
+export const metadata = { title: "Methods" };
 
 // Methods list (US-B1 AC 1). Top-level nav section per US-A3 AC 2; all org
 // roles may view, editing is Admin / Lab manager only.

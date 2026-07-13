@@ -11,7 +11,7 @@ import {
 import { resolveQcActor } from "./actions";
 import { QcClient } from "./qc-client";
 
-export const metadata = { title: "QC materials — LIMS" };
+export const metadata = { title: "QC materials" };
 
 // Quality ▸ QC materials (US-B2). All org roles view; Admin / Lab manager
 // manage within their labs. The pass/fail comparison lives in epic E; adding

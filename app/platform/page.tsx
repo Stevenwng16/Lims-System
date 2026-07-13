@@ -1,6 +1,7 @@
 import { cookies } from "next/headers";
 import { redirect } from "next/navigation";
 import { decodeSession, SESSION_COOKIE } from "@/lib/auth/session";
+import { PRODUCT_NAME } from "@/lib/branding";
 import { platformApi } from "@/lib/platform";
 import { logoutAction } from "../(auth)/actions";
 import { Button } from "@/components/ui/button";
@@ -8,7 +9,7 @@ import { ThemeToggle } from "@/components/theme-toggle";
 import { OrganisationTable } from "./organisation-table";
 import { ProvisionDialog } from "./provision-dialog";
 
-export const metadata = { title: "Platform console — LIMS" };
+export const metadata = { title: "Platform console" };
 
 // Vendor-only internal tool (US-A2 AC 12). Deliberately minimal: list,
 // provisioning, suspend/reactivate, support-grant status. Never shows
@@ -25,7 +26,7 @@ export default async function PlatformConsolePage() {
       <header className="border-b border-zinc-200 bg-white dark:border-zinc-800 dark:bg-zinc-900">
         <div className="mx-auto flex max-w-6xl items-center justify-between px-6 py-4">
           <div className="flex items-baseline gap-3">
-            <span className="text-lg font-semibold tracking-tight text-primary">LIMS</span>
+            <span className="text-lg font-semibold tracking-tight text-primary">{PRODUCT_NAME}</span>
             <span className="text-sm text-zinc-500 dark:text-zinc-400">
               Platform console · vendor-only
             </span>

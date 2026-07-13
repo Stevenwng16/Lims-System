@@ -2,6 +2,7 @@ import type { Metadata } from "next";
 import { Geist_Mono, Inter } from "next/font/google";
 import { ThemeProvider } from "@/components/theme-provider";
 import { TooltipProvider } from "@/components/ui/tooltip";
+import { PRODUCT_NAME } from "@/lib/branding";
 import "./globals.css";
 
 const inter = Inter({
@@ -15,7 +16,9 @@ const geistMono = Geist_Mono({
 });
 
 export const metadata: Metadata = {
-  title: "LIMS",
+  // Pages set only their own part (e.g. "Methods"); the template appends the
+  // product name, so the brand lives in lib/branding.ts alone.
+  title: { default: PRODUCT_NAME, template: `%s — ${PRODUCT_NAME}` },
   description: "Laboratory Information Management System",
 };
 
