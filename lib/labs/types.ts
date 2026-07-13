@@ -22,8 +22,12 @@ export type LabActionResult = { status: "success" } | { status: "error"; message
 export interface LabApi {
   /** AC 1: list with linked-record counts. */
   listLabs(orgId: string): Promise<LabSummary[]>;
-  /** AC 2: code unique within the organisation. */
-  createLab(orgId: string, input: LabInput): Promise<LabActionResult>;
+  /** AC 2: code unique within the organisation. `actorEmail` = the creating
+   * user (resolved server-side): the FIRST lab of a setup-pending organisation
+   * completes first-run setup and assigns its creator to the lab — the only
+   * admin could never assign themself afterwards, since US-A6 AC 9 blocks
+   * self-service on lab assignments (13 Jul 2026 decision). */
+  createLab(orgId: string, input: LabInput, actorEmail: string): Promise<LabActionResult>;
   /** AC 3: editing never rewrites codes already embedded in issued IDs. */
   updateLab(orgId: string, labId: string, input: LabInput): Promise<LabActionResult>;
   /** Guard-only validation of a status change (no mutation) so a combined

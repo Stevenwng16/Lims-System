@@ -219,6 +219,21 @@ check: `npx next build` (should be green, 28 routes as of pass 3). The mock stor
 
 ## Status
 
+- **Backend pass STARTED, then paused (13 Jul 2026)** — all scope files were read (auth adapter,
+  context, session, the four action files, 3 migrations, config.toml, CI, seed script,
+  .env.local); Ramazan paused it for manual end-to-end testing. Notes so far, to fold into the
+  pass when it resumes: (1) the `labs: null` Supabase fallback in `resolveOrgContext` grants a
+  backend-authenticated user ALL labs of the org — org-wide scope for lab managers (the logged
+  4 Jul decision says "fall back to domain-layer labs", but real backend users have no per-user
+  domain assignments); (2) the DB role constraint maps unknown roles via `DB_ROLE_MAP` with
+  `"user" → analyst` while the code comment says degrade to read-only.
+- **Interim (13 Jul 2026): clean-start test mode** — `LIMS_CLEAN_SEED=1` seeds only the vendor
+  account; provisioning now creates a working first-admin account (it previously only printed an
+  invite line — dead end). `.env.local` currently runs the MOCK backend + clean seed for
+  Ramazan's manual test; restore instructions are in the file. Changed files:
+  `lib/mock-db.ts`, `lib/platform/mock.ts`, `lib/platform/types.ts`, `app/platform/actions.ts`,
+  `app/(auth)/login/demo-accounts.tsx`, `.env.local`, `docs/decision-log.md`,
+  `docs/review-changes.md`, this file.
 - **Pass 4 complete (13 Jul 2026).** Run as an ultracode workflow on Fable 5 (10 reviewers —
   3 × US-D2, 7 × consistency over the pass-2/3 fix areas → merge → 3 double-checks per finding →
   coverage critic → 3 targeted round-2 reviewers). The first run lost 19 verifier agents to the

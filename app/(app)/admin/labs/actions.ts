@@ -10,22 +10,27 @@ export type LabFormState = { error?: string; success?: boolean };
 // Lab management is Admin-only (US-A5 authorization); support sessions with
 // admin rights pass the same matrix (US-A4 AC 13). Live-validated + org-gated
 // via the shared resolver (audit findings 4/6).
-async function requireAdminOrgId(): Promise<string> {
+async function requireAdminOrgId(): Promise<{ orgId: string; email: string }> {
   const ctx = await resolveOrgContext();
   if (ctx.role !== "admin" || !ctx.orgId) redirect("/");
-  return ctx.orgId;
+  // The email is needed for createLab's first-run setup assignment.
+  return { orgId: ctx.orgId, email: ctx.user.email };
 }
 
 export async function createLabAction(
   _prev: LabFormState,
   formData: FormData,
 ): Promise<LabFormState> {
-  const orgId = await requireAdminOrgId();
-  const result = await labApi.createLab(orgId, {
-    name: String(formData.get("name") ?? ""),
-    code: String(formData.get("code") ?? ""),
-    description: String(formData.get("description") ?? ""),
-  });
+  const { orgId, email } = await requireAdminOrgId();
+  const result = await labApi.createLab(
+    orgId,
+    {
+      name: String(formData.get("name") ?? ""),
+      code: String(formData.get("code") ?? ""),
+      description: String(formData.get("description") ?? ""),
+    },
+    email,
+  );
   if (result.status === "error") return { error: result.message };
   revalidatePath("/admin/labs");
   return { success: true };
@@ -35,7 +40,7 @@ export async function updateLabAction(
   _prev: LabFormState,
   formData: FormData,
 ): Promise<LabFormState> {
-  const orgId = await requireAdminOrgId();
+  const { orgId } = await requireAdminOrgId();
   const labId = String(formData.get("labId") ?? "");
   const requestedStatus = formData.get("status") === "inactive" ? "inactive" : "active";
   const statusReason = String(formData.get("statusReason") ?? "");

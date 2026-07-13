@@ -5,6 +5,76 @@ reasoning, written for Steven and future readers. Newest pass first. Each change
 inline comment at the spot in the code; fundamental choices are one-liners in
 `docs/decision-log.md`.
 
+## Interim — vendor console: deactivate organisation (13 Jul 2026)
+
+Ramazan's next usability finding ("can't remove organisations"): US-A2 AC 1 names
+*deactivation* as a first-class vendor act (status `active/suspended/deactivated`), but the
+console only had suspend/reactivate — so dead orgs piled up with no way to clear them. A true
+delete is forbidden (invariant 2 / AC 1: "organisations are never deleted"). Built the missing
+deactivation instead:
+
+- **`deactivateOrganisation`** (`lib/platform/{types,mock}.ts`, `app/platform/actions.ts`):
+  reason required and recorded, the org + all its data retained, any live support grant ended
+  (a deactivated org must carry no vendor access; every login/support gate already refuses a
+  non-active org). Reactivatable, like a suspended org; re-deactivation refused.
+- **Console** (`app/platform/organisation-table.tsx`): a Deactivate action on active/suspended
+  rows; deactivated orgs are **hidden by default** behind a "Show deactivated (N)" toggle — the
+  same hidden-by-default pattern as voided jobs / completed batches, which is the "removed from
+  view without data loss" behaviour Ramazan actually wanted. The status dialog was refactored to
+  an explicit suspend/reactivate/deactivate mode.
+
+Verified: 8 new deactivation checks (reason required, retained-not-deleted, grant ended, member
+locked out, re-deactivation refused, reactivation restores login) + the 121-check demo suite +
+`npx next build`, all green.
+
+## Interim — first-run setup replaces the seeded default lab (13 Jul 2026)
+
+Ramazan's first live-usability finding, decided and built the same day (decision-log entry;
+US-A5 AC 8 amendment pending in Notion):
+
+- **Provisioning no longer seeds "Main lab"/"MAIN"** (`lib/platform/mock.ts`): the lab code is
+  stamped into every job/batch identifier forever, so a placeholder would mint synthetic
+  identity into accredited records. Org settings + starter equipment types are still seeded.
+- **New first-run setup** (`app/(app)/setup/**`, redirect in `app/(app)/page.tsx`): an admin of
+  a zero-lab organisation lands on a welcome screen and creates the real first lab (with an
+  explanation of what the code means). Only admins can reach this state — users cannot exist
+  without a lab assignment and the last active lab can never be deactivated — and the two
+  redirects are complementary, so no loop.
+- **`createLab` gains the acting user** (`lib/labs/{types,mock}.ts`, both callers updated): the
+  FIRST lab of a setup-pending org completes setup (`setupPending` → false, now actually
+  flipping the AC 4 flag the vendor console displays) and assigns its creator to the lab with
+  an audited user event. This is load-bearing, not convenience: US-A6 AC 9 blocks self-service
+  on lab assignments, so the organisation's only admin could never assign themself afterwards.
+  A second lab never auto-assigns; a vendor completing setup via support session gets no
+  assignment (not an org member).
+
+Verified: 20 clean-mode checks (provision → no lab → setup completes + assigns + resolves as
+active lab → second lab does not auto-assign) + the 121-check demo suite + `npx next build`
+(new `/setup` route), all green.
+
+## Interim — clean-start test mode + provisioning fix (13 Jul 2026, after pass 4)
+
+For Ramazan's manual end-to-end test:
+
+- **Provisioning now creates the first admin account** (`lib/platform/mock.ts` +
+  `lib/platform/types.ts` + `app/platform/actions.ts`): it only printed "invitation sent", so a
+  freshly provisioned organisation had no account that could log in — dead end for US-A2 AC 4.
+  The mock stand-in mirrors `createUser`: password preset to the demo password, platform-wide
+  email-uniqueness checked BEFORE anything mutates, account assigned to the seeded "Main lab",
+  and an audit event attributed to the acting platform admin (US-A6 AC 11/12, invariant 6).
+- **Clean-start switch** (`lib/mock-db.ts`): `LIMS_CLEAN_SEED=1` seeds an empty platform with
+  only `vendor@lims.dev` — the store cache key carries the mode, so flipping the flag plus a
+  dev-server restart always yields the right store. Demo dataset remains the default (the
+  121-check harness and demos rely on it). The login page's dev-only accounts box shows only
+  what actually exists in clean mode (`app/(auth)/login/demo-accounts.tsx`).
+- **`.env.local`**: Supabase vars commented out for the test (org provisioning + account
+  creation are mock-layer features; users created in the app cannot log in via Supabase),
+  `LIMS_CLEAN_SEED=1` added — with restore instructions in the file.
+
+Verified: 13 clean-mode checks (empty store, vendor login, provision → defaults + Main lab +
+equipment types + working admin login, duplicate org/email refused before mutation) + the full
+121-check demo suite + `npx next build`, all green.
+
 ## Pass 4 — US-D2 work queue · consistency sweep over the pass-2/3 fix areas (13 Jul 2026)
 
 Run as a multi-agent review (10 scoped reviewers — 3 on US-D2, 7 consistency lanes → merge →

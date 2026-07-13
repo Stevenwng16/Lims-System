@@ -23,11 +23,26 @@ export type MockOrganisation = {
   id: string;
   name: string;
   status: OrgStatus;
+  // The CURRENT reason only (display convenience) — the full history of every
+  // status change lives in the append-only platform audit log below.
   statusReason?: string;
   subscription: SubscriptionStatus;
   createdAt: string;
   setupPending: boolean;
   supportGrant: SupportGrant | null;
+};
+
+// US-A2 AC 3: the platform-level audit log — vendor actions on tenants
+// (provisioning, suspend/reactivate/deactivate), separate from customer audit
+// logs and never containing customer domain data. Append-only (invariant 1);
+// entries carry the acting platform admin (invariant 6) and the reason.
+// Read UI belongs to epic E (out of scope) — this is the hook, not the epic.
+export type MockPlatformEvent = {
+  id: string;
+  at: string; // ISO
+  by: string; // acting platform admin
+  orgId: string; // the tenant the action concerned
+  summary: string; // action + reason
 };
 
 export type MockLab = {
@@ -699,6 +714,8 @@ export type MockEquipment = {
 
 export type MockDb = {
   organisations: Map<string, MockOrganisation>;
+  // Platform-level audit log (US-A2 AC 3) — append-only, see MockPlatformEvent.
+  platformAudit: MockPlatformEvent[];
   users: Map<string, MockUser>;
   labs: Map<string, MockLab>;
   orgSettings: Map<string, OrgSettings>;
@@ -1819,6 +1836,17 @@ function seedDb(): MockDb {
 
   return {
     organisations,
+    // Seed orgs predate the log — OldCust's suspension entry keeps the seed
+    // consistent with the rule that every status change is recorded.
+    platformAudit: [
+      {
+        id: "pev-seed-1",
+        at: "2026-06-15T10:00:00.000Z",
+        by: "vendor@lims.dev",
+        orgId: "org-oldcust",
+        summary: "Organisation suspended — reason: Non-payment (mock seed)",
+      },
+    ],
     users,
     labs,
     orgSettings,
@@ -1836,12 +1864,61 @@ function seedDb(): MockDb {
   };
 }
 
-// V24: pass-4 review — per-job and per-user audit event lists (US-C3 AC 5 /
-// US-A6 AC 12), seed batch METB26-0001 gains its Zn expectation line and its
-// four result-validity events. (V23: pass-3 — QC expectation snapshots,
-// reviewAct flag, config attribution/events, settingsEvents, pendingBulk.)
-export const mockDb: MockDb = ((globalThis as Record<string, unknown>).__limsMockDbV24 ??=
-  seedDb()) as MockDb;
+// CLEAN START (LIMS_CLEAN_SEED=1 in .env.local): an empty platform with ONLY
+// the vendor account, for walking the real flow end to end — provision an
+// organisation from the vendor console, log in as its invited admin (password
+// preset to the demo password, see provisionOrganisation), create labs, users,
+// methods, QC, equipment, jobs, batches. The demo dataset stays the DEFAULT
+// (flag unset) so demos and the review harness keep working. Restart the dev
+// server after flipping the flag — the store is cached per mode on globalThis.
+function cleanDb(): MockDb {
+  const users = new Map<string, MockUser>();
+  users.set("vendor@lims.dev", {
+    email: "vendor@lims.dev",
+    name: "Vera Vendor",
+    organisation: "LIMS Platform",
+    role: "platform-admin",
+    orgId: null,
+    labs: [],
+    events: [],
+    clearances: [],
+    status: "active",
+    lastLogin: null,
+    password: DEMO_PASSWORD,
+    mfaRequired: false,
+    failedAttempts: 0,
+    locked: false,
+  });
+  return {
+    organisations: new Map(),
+    platformAudit: [],
+    users,
+    labs: new Map(),
+    orgSettings: new Map(),
+    methods: new Map(),
+    qcMaterials: new Map(),
+    equipment: new Map(),
+    equipmentTypes: new Map(), // seeded per organisation at provisioning (US-B3 AC 2)
+    jobs: new Map(),
+    batches: new Map(),
+    batchFiles: new Map(),
+    importConfigs: new Map(),
+    pendingImports: new Map(),
+    pendingBulk: new Map(),
+    sequences: new Map(),
+  };
+}
+
+// V25: platformAudit — the platform-level audit log of US-A2 AC 3 (org
+// provisioning + status changes, attributed). (V24: pass-4 review — per-job
+// and per-user audit event lists (US-C3 AC 5 / US-A6 AC 12), seed batch
+// METB26-0001 gains its Zn expectation line and its four result-validity
+// events.) The cache key carries the seed MODE so flipping LIMS_CLEAN_SEED
+// can never serve the other mode's store.
+const CLEAN_SEED = process.env.LIMS_CLEAN_SEED === "1";
+export const mockDb: MockDb = ((globalThis as Record<string, unknown>)[
+  CLEAN_SEED ? "__limsMockDbV25Clean" : "__limsMockDbV25"
+] ??= CLEAN_SEED ? cleanDb() : seedDb()) as MockDb;
 
 export function getOrgSettings(orgId: string): OrgSettings {
   let settings = mockDb.orgSettings.get(orgId);

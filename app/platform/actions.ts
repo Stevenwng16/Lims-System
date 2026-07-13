@@ -14,7 +14,7 @@ import {
 
 export type PlatformFormState = { error?: string; success?: boolean };
 
-async function requirePlatformAdmin() {
+async function requirePlatformAdmin(): Promise<string> {
   const cookieStore = await cookies();
   const session = decodeSession(cookieStore.get(SESSION_COOKIE)?.value);
   // UI hiding is presentation — this check is the mock's stand-in for the
@@ -25,16 +25,19 @@ async function requirePlatformAdmin() {
   if (!live || live.user.role !== "platform-admin") {
     redirect("/session-expired");
   }
+  // The LIVE identity, for attributing platform acts (invariant 6).
+  return live.user.email;
 }
 
 export async function provisionOrganisationAction(
   _prev: PlatformFormState,
   formData: FormData,
 ): Promise<PlatformFormState> {
-  await requirePlatformAdmin();
+  const actorEmail = await requirePlatformAdmin();
   const result = await platformApi.provisionOrganisation(
     String(formData.get("name") ?? ""),
     String(formData.get("adminEmail") ?? ""),
+    actorEmail, // audit attribution for the created first-admin account
   );
   if (result.status === "error") return { error: result.message };
   revalidatePath("/platform");
@@ -45,10 +48,11 @@ export async function suspendOrganisationAction(
   _prev: PlatformFormState,
   formData: FormData,
 ): Promise<PlatformFormState> {
-  await requirePlatformAdmin();
+  const actorEmail = await requirePlatformAdmin();
   const result = await platformApi.suspendOrganisation(
     String(formData.get("orgId") ?? ""),
     String(formData.get("reason") ?? ""),
+    actorEmail, // platform-level audit attribution (US-A2 AC 3)
   );
   if (result.status === "error") return { error: result.message };
   revalidatePath("/platform");
@@ -59,10 +63,26 @@ export async function reactivateOrganisationAction(
   _prev: PlatformFormState,
   formData: FormData,
 ): Promise<PlatformFormState> {
-  await requirePlatformAdmin();
+  const actorEmail = await requirePlatformAdmin();
   const result = await platformApi.reactivateOrganisation(
     String(formData.get("orgId") ?? ""),
     String(formData.get("reason") ?? ""),
+    actorEmail,
+  );
+  if (result.status === "error") return { error: result.message };
+  revalidatePath("/platform");
+  return { success: true };
+}
+
+export async function deactivateOrganisationAction(
+  _prev: PlatformFormState,
+  formData: FormData,
+): Promise<PlatformFormState> {
+  const actorEmail = await requirePlatformAdmin();
+  const result = await platformApi.deactivateOrganisation(
+    String(formData.get("orgId") ?? ""),
+    String(formData.get("reason") ?? ""),
+    actorEmail,
   );
   if (result.status === "error") return { error: result.message };
   revalidatePath("/platform");

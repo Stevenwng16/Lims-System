@@ -4,6 +4,7 @@ import { useEffect, useState } from "react";
 import { useActionState } from "react";
 import type { OrganisationSummary } from "@/lib/platform";
 import {
+  deactivateOrganisationAction,
   openSupportSessionAction,
   reactivateOrganisationAction,
   suspendOrganisationAction,
@@ -12,6 +13,7 @@ import {
 import { Alert, AlertDescription } from "@/components/ui/alert";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
+import { Checkbox } from "@/components/ui/checkbox";
 import {
   Dialog,
   DialogContent,
@@ -45,21 +47,54 @@ function grantLabel(org: OrganisationSummary): string {
   return `${hoursLeft}h left${org.supportGrant.allowAdmin ? " · admin" : ""}`;
 }
 
+type StatusMode = "suspend" | "reactivate" | "deactivate";
+
+const MODE_COPY: Record<
+  StatusMode,
+  { action: typeof suspendOrganisationAction; title: string; body: string; cta: string; destructive: boolean }
+> = {
+  suspend: {
+    action: suspendOrganisationAction,
+    title: "Suspend",
+    body: "Users of this organisation will no longer be able to log in. No data is altered or removed; reactivation restores access exactly as it was.",
+    cta: "Suspend organisation",
+    destructive: true,
+  },
+  reactivate: {
+    action: reactivateOrganisationAction,
+    title: "Reactivate",
+    body: "Users of this organisation will be able to log in again.",
+    cta: "Reactivate organisation",
+    destructive: false,
+  },
+  deactivate: {
+    action: deactivateOrganisationAction,
+    // Deactivate, never delete (US-A2 AC 1): the org and all its data are
+    // retained for traceability; it just leaves the active set and drops out
+    // of the default console view. Reactivatable if it was a mistake.
+    title: "Deactivate",
+    body: "The organisation and all its data are retained (nothing is ever deleted), but it leaves the active list and its users can no longer log in. Any support grant is ended. You can reactivate it later.",
+    cta: "Deactivate organisation",
+    destructive: true,
+  },
+};
+
 // Per-target dialog with its own action state (audit finding 29): fresh state
 // per mount fixes stale-error leakage and the title flip; the functional-
 // updater close guard fixes an in-flight result closing the wrong dialog.
 function StatusDialog({
   org,
+  mode,
   onClose,
   onSuccess,
 }: {
   org: OrganisationSummary;
+  mode: StatusMode;
   onClose: () => void;
   onSuccess: (orgId: string) => void;
 }) {
-  const suspending = org.status === "active";
-  const action = suspending ? suspendOrganisationAction : reactivateOrganisationAction;
-  const [state, submit, pending] = useActionState(action, initialState);
+  const copy = MODE_COPY[mode];
+  const [state, submit, pending] = useActionState(copy.action, initialState);
 
   useEffect(() => {
     if (state.success) onSuccess(org.id);
@@ -70,14 +105,9 @@ function StatusDialog({
       <DialogContent>
         <DialogHeader>
           <DialogTitle>
-            {suspending ? "Suspend" : "Reactivate"} {org.name}
+            {copy.title} {org.name}
           </DialogTitle>
-          <DialogDescription>
-            {suspending
-              ? "Users of this organisation will no longer be able to log in. No data is altered or removed; reactivation restores access exactly as it was."
-              : "Users of this organisation will be able to log in again."}{" "}
-            A reason is required and recorded.
-          </DialogDescription>
+          <DialogDescription>{copy.body} A reason is required and recorded.</DialogDescription>
         </DialogHeader>
         <form action={submit} className="space-y-4">
           <input type="hidden" name="orgId" value={org.id} />
@@ -93,10 +123,10 @@ function StatusDialog({
           <Button
             type="submit"
             className="w-full"
-            variant={suspending ? "destructive" : "default"}
+            variant={copy.destructive ? "destructive" : "default"}
             disabled={pending}
           >
-            {pending ? "Saving…" : suspending ? "Suspend organisation" : "Reactivate organisation"}
+            {pending ? "Saving…" : copy.cta}
           </Button>
         </form>
       </DialogContent>
@@ -105,14 +135,28 @@ function StatusDialog({
 }
 
 export function OrganisationTable({ organisations }: { organisations: OrganisationSummary[] }) {
-  const [dialogOrg, setDialogOrg] = useState<OrganisationSummary | null>(null);
+  // The dialog carries its target AND which status change it performs, so the
+  // same component drives suspend / reactivate / deactivate.
+  const [dialog, setDialog] = useState<{ org: OrganisationSummary; mode: StatusMode } | null>(null);
   const [sessionState, openSession, sessionPending] = useActionState(
     openSupportSessionAction,
     initialState,
   );
+  // Deactivated organisations are hidden by default (same hidden-by-default
+  // pattern as voided jobs / completed batches) — they are never deleted, just
+  // out of the way; a toggle brings them back to reactivate.
+  const [showDeactivated, setShowDeactivated] = useState(false);
+  const deactivatedCount = organisations.filter((o) => o.status === "deactivated").length;
+  const visible = organisations.filter((o) => showDeactivated || o.status !== "deactivated");
 
   return (
     <>
+      {deactivatedCount > 0 && (
+        <Label className="flex items-center gap-2 text-sm text-zinc-500 dark:text-zinc-400">
+          <Checkbox checked={showDeactivated} onCheckedChange={(c) => setShowDeactivated(c === true)} />
+          Show deactivated ({deactivatedCount})
+        </Label>
+      )}
       <div className="overflow-x-auto rounded-lg border border-zinc-200 bg-white dark:border-zinc-800 dark:bg-zinc-900">
         <Table>
           <TableHeader>
@@ -127,7 +171,7 @@ export function OrganisationTable({ organisations }: { organisations: Organisati
             </TableRow>
           </TableHeader>
           <TableBody>
-            {organisations.map((org) => (
+            {visible.map((org) => (
               <TableRow key={org.id}>
                 <TableCell className="font-medium">
                   {org.name}
@@ -157,9 +201,30 @@ export function OrganisationTable({ organisations }: { organisations: Organisati
                   )}
                 </TableCell>
                 <TableCell className="text-right">
-                  <Button variant="ghost" size="xs" onClick={() => setDialogOrg(org)}>
-                    {org.status === "active" ? "Suspend" : "Reactivate"}
-                  </Button>
+                  <div className="flex items-center justify-end gap-1">
+                    {/* active/suspended can be suspended-toggled and
+                        deactivated; a deactivated org can only be reactivated. */}
+                    {org.status === "active" && (
+                      <Button variant="ghost" size="xs" onClick={() => setDialog({ org, mode: "suspend" })}>
+                        Suspend
+                      </Button>
+                    )}
+                    {org.status !== "active" && (
+                      <Button variant="ghost" size="xs" onClick={() => setDialog({ org, mode: "reactivate" })}>
+                        Reactivate
+                      </Button>
+                    )}
+                    {org.status !== "deactivated" && (
+                      <Button
+                        variant="ghost"
+                        size="xs"
+                        className="text-destructive"
+                        onClick={() => setDialog({ org, mode: "deactivate" })}
+                      >
+                        Deactivate
+                      </Button>
+                    )}
+                  </div>
                 </TableCell>
               </TableRow>
             ))}
@@ -172,12 +237,13 @@ export function OrganisationTable({ organisations }: { organisations: Organisati
         </Alert>
       )}
 
-      {dialogOrg && (
+      {dialog && (
         <StatusDialog
-          key={dialogOrg.id}
-          org={dialogOrg}
-          onClose={() => setDialogOrg(null)}
-          onSuccess={(orgId) => setDialogOrg((cur) => (cur?.id === orgId ? null : cur))}
+          key={`${dialog.org.id}:${dialog.mode}`}
+          org={dialog.org}
+          mode={dialog.mode}
+          onClose={() => setDialog(null)}
+          onSuccess={(orgId) => setDialog((cur) => (cur?.org.id === orgId ? null : cur))}
         />
       )}
     </>

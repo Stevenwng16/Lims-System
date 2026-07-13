@@ -60,15 +60,16 @@ export const mockLabApi: LabApi = {
     }));
   },
 
-  async createLab(orgId, input): Promise<LabActionResult> {
+  async createLab(orgId, input, actorEmail): Promise<LabActionResult> {
     const error = validateInput(orgId, input);
     if (error) return { status: "error", message: error };
     const code = input.code.trim().toUpperCase();
+    const name = input.name.trim();
     const id = `lab-${orgId}-${code.toLowerCase()}-${mockDb.labs.size}`;
     mockDb.labs.set(id, {
       id,
       orgId,
-      name: input.name.trim(),
+      name,
       code,
       description: input.description.trim(),
       status: "active",
@@ -76,6 +77,28 @@ export const mockLabApi: LabApi = {
       analystsMayCreateBatches: false,
       reviewerMustDiffer: false,
     });
+    // First-run setup (US-A2 AC 4; 13 Jul 2026 decision replacing the seeded
+    // default lab): the FIRST lab of a setup-pending organisation completes
+    // setup, and its creator — when an org member — is assigned to it. That
+    // assignment must happen HERE: the organisation's only admin can never
+    // assign themself afterwards (US-A6 AC 9 blocks self-service on labs),
+    // so without it the fresh org would have no working lab context at all.
+    // A vendor acting through a support session completes setup without
+    // gaining an assignment (they are not an org member).
+    const org = mockDb.organisations.get(orgId);
+    if (org?.setupPending) {
+      org.setupPending = false;
+      const creator = mockDb.users.get(actorEmail);
+      if (creator && creator.orgId === orgId && !creator.labs.includes(name)) {
+        creator.labs.push(name);
+        creator.events.push({
+          id: `uev-${crypto.randomUUID()}`,
+          at: new Date().toISOString(),
+          by: actorEmail,
+          summary: `Assigned to lab "${name}" (first-run setup: creator of the organisation's first lab)`,
+        });
+      }
+    }
     return { status: "success" };
   },
 

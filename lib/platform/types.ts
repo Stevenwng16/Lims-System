@@ -15,11 +15,20 @@ export type ActionResult = { status: "success" } | { status: "error"; message: s
 export interface PlatformApi {
   /** Vendor console list (US-A2 AC 12) — metadata only, never domain data (AC 10). */
   listOrganisations(): Promise<OrganisationSummary[]>;
-  /** AC 4/5: creates the org with seeded defaults + invited first admin. */
-  provisionOrganisation(name: string, adminEmail: string): Promise<ActionResult>;
-  /** AC 6: reason required, nothing deleted. */
-  suspendOrganisation(orgId: string, reason: string): Promise<ActionResult>;
-  reactivateOrganisation(orgId: string, reason: string): Promise<ActionResult>;
+  /** AC 4/5: creates the org with seeded defaults + the invited first admin
+   * ACCOUNT (mock: password preset to the demo password — the real backend
+   * sends a setup invitation instead). `actorEmail` = the provisioning
+   * platform admin, resolved server-side, for the account's audit trail. */
+  provisionOrganisation(name: string, adminEmail: string, actorEmail: string): Promise<ActionResult>;
+  /** AC 6: reason required, nothing deleted. Every status change lands in the
+   * platform-level audit log (AC 3), attributed to `actorEmail` — the acting
+   * platform admin, resolved server-side (invariant 6). */
+  suspendOrganisation(orgId: string, reason: string, actorEmail: string): Promise<ActionResult>;
+  reactivateOrganisation(orgId: string, reason: string, actorEmail: string): Promise<ActionResult>;
+  /** AC 1: deactivate (never delete) — reason required and recorded; the org
+   * and all its data are retained, users can no longer log in, and any live
+   * support grant is ended. Reactivatable, like a suspended org. */
+  deactivateOrganisation(orgId: string, reason: string, actorEmail: string): Promise<ActionResult>;
 
   /** Customer side (AC 8): current grant for the session's own organisation. */
   getSupportGrant(orgId: string): Promise<MockOrganisation["supportGrant"]>;
