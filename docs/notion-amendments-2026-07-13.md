@@ -74,6 +74,24 @@ decision (now removed).
 - **Clarify** — "each **lab-scoped** user is assigned to one or more labs…;
   Admin is organisation-scoped."
 
+## Decision C — Org-specific lists start empty at provisioning
+
+**Rationale:** sample types, result qualifiers and equipment types are the
+lab's own taxonomy; pre-filled guesses get silently kept and leak into
+accredited records (same reasoning as the no-default-lab decision). "Safe
+defaults" (US-A2 AC 5) = empty for org-specific lists; structural settings
+(security, identifier formats, barcode) keep real defaults.
+
+### US-A2 (provisioning) — AC 5
+- **Clarify** — "seeded with safe defaults" means: structural settings get
+  working defaults; org-specific lists (sample types, result qualifiers,
+  equipment types) start EMPTY and are defined by the organisation's admin.
+
+### US-B3 (equipment) — AC 2
+- **Amend** — the configurable equipment-type list starts **empty**; the
+  starter list (Balance / pH meter / Thermometer) is dropped. Types are
+  added on the Equipment page as before.
+
 ## Changelog lines (for the Notion changelog)
 
 - 13 Jul 2026 — Jobs made organisation-wide (one order = one number; methods
@@ -82,3 +100,6 @@ decision (now removed).
 - 13 Jul 2026 — Admins made organisation-wide (no lab assignments; "All
   labs" switcher default). US-A3 AC 4, US-A6 AC 2 amended; US-A4 AC 7
   clarified. Decided by Ramazan.
+- 13 Jul 2026 — Org-specific lists (sample types, result qualifiers,
+  equipment types) start empty at provisioning. US-A2 AC 5 clarified,
+  US-B3 AC 2 amended. Decided by Ramazan.

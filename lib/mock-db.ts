@@ -131,12 +131,13 @@ export function defaultOrgSettings(): OrgSettings {
       sequenceReset: "yearly",
     },
     jobLabel: "Job",
-    // Sample types start EMPTY (13 Jul 2026 decision): what a lab tests is
-    // org-specific taxonomy — pre-filled guesses would leak into accredited
-    // records. The admin defines them under Admin ▸ Settings before the
-    // first job. (The demo seed sets its own list explicitly below.)
+    // Org-specific lists start EMPTY (13 Jul 2026 decision): sample types,
+    // result qualifiers and equipment types are the lab's own taxonomy —
+    // pre-filled guesses would be silently kept and leak into accredited
+    // records. The admin defines them under Admin ▸ Settings / Equipment.
+    // (The demo seed sets its own lists explicitly.)
     sampleTypes: [],
-    resultQualifiers: [{ id: "rq-1", name: "n.b.", active: true }],
+    resultQualifiers: [],
     barcode: {
       symbology: "code128",
       widthMm: 50,
@@ -795,18 +796,11 @@ export type MockDb = {
 
 export const DEMO_PASSWORD = "LabDemo2026!!";
 
-// Starter equipment-type list seeded at provisioning (US-B3 AC 2 — the list is
-// configurable per organisation; these are just safe defaults, US-A2 AC 5).
-export const DEFAULT_EQUIPMENT_TYPES = ["Balance", "pH meter", "Thermometer"];
-
-export function seedDefaultEquipmentTypes(orgId: string): void {
-  for (const [i, name] of DEFAULT_EQUIPMENT_TYPES.entries()) {
-    const id = `eqt-${orgId}-${i}`;
-    if (!mockDb.equipmentTypes.has(id)) {
-      mockDb.equipmentTypes.set(id, { id, orgId, name, status: "active" });
-    }
-  }
-}
+// Since 13 Jul 2026, provisioning seeds NO equipment types (same decision as
+// the empty sample-type/qualifier lists — the type list is the lab's own
+// taxonomy, US-B3 AC 2 amendment pending in Notion). This list only feeds the
+// DEMO seed's side organisations below.
+const DEFAULT_EQUIPMENT_TYPES = ["Balance", "pH meter", "Thermometer"];
 
 function seedDb(): MockDb {
   const organisations = new Map<string, MockOrganisation>();
@@ -989,13 +983,15 @@ function seedDb(): MockDb {
   for (const orgId of organisations.keys()) {
     orgSettings.set(orgId, defaultOrgSettings());
   }
-  // The demo org's sample types are seed DATA (fresh orgs start with an empty
-  // list, 13 Jul 2026 decision) — seed jobs reference st-1/st-2.
+  // The demo org's sample types and qualifiers are seed DATA (fresh orgs
+  // start with empty lists, 13 Jul 2026 decision) — seed jobs reference
+  // st-1/st-2 and seed results snapshot the "n.b." qualifier.
   orgSettings.get("org-demolab")!.sampleTypes = [
     { id: "st-1", name: "Water", active: true },
     { id: "st-2", name: "Soil", active: true },
     { id: "st-3", name: "Sludge", active: true },
   ];
+  orgSettings.get("org-demolab")!.resultQualifiers = [{ id: "rq-1", name: "n.b.", active: true }];
 
   // Seed methods (US-B1). Seed checksums are placeholders — templates uploaded
   // through the UI get a real SHA-256 computed from the bytes.
@@ -1924,15 +1920,16 @@ function cleanDb(): MockDb {
   };
 }
 
-// V27: fresh orgs start with EMPTY sample types (13 Jul 2026) — the demo org
-// seeds its own list. (V26: org-wide jobs — MockJob loses labId, job
-// sequences run per org+period, default jobFormat "J{YY}-{SEQ:00000}"; V25:
-// platformAudit — the platform-level audit log of US-A2 AC 3.) The cache key
-// carries the seed MODE so flipping LIMS_CLEAN_SEED can never serve the
-// other mode's store.
+// V28: fresh orgs start with EMPTY org-specific lists (13 Jul 2026) — sample
+// types, result qualifiers AND equipment types; the demo org seeds its own.
+// (V26: org-wide jobs — MockJob loses labId, job sequences run per
+// org+period, default jobFormat "J{YY}-{SEQ:00000}"; V25: platformAudit —
+// the platform-level audit log of US-A2 AC 3.) The cache key carries the
+// seed MODE so flipping LIMS_CLEAN_SEED can never serve the other mode's
+// store.
 const CLEAN_SEED = process.env.LIMS_CLEAN_SEED === "1";
 export const mockDb: MockDb = ((globalThis as Record<string, unknown>)[
-  CLEAN_SEED ? "__limsMockDbV27Clean" : "__limsMockDbV27"
+  CLEAN_SEED ? "__limsMockDbV28Clean" : "__limsMockDbV28"
 ] ??= CLEAN_SEED ? cleanDb() : seedDb()) as MockDb;
 
 export function getOrgSettings(orgId: string): OrgSettings {

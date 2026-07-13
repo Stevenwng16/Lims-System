@@ -2,7 +2,6 @@ import {
   defaultOrgSettings,
   DEMO_PASSWORD,
   mockDb,
-  seedDefaultEquipmentTypes,
   type MockOrganisation,
 } from "@/lib/mock-db";
 import type { ActionResult, PlatformApi } from "./types";
@@ -76,18 +75,17 @@ export const mockPlatformApi: PlatformApi = {
       setupPending: true, // until the invited admin completes setup (AC 4)
       supportGrant: null,
     });
-    // US-A2 AC 5 / US-A7 AC 1: settings seeded with safe defaults.
+    // US-A2 AC 5 / US-A7 AC 1: settings seeded with safe defaults — where
+    // "safe" means EMPTY for the org's own taxonomies (sample types, result
+    // qualifiers, equipment types; 13 Jul 2026 decision): pre-filled guesses
+    // would be silently kept and leak into accredited records.
     mockDb.orgSettings.set(id, defaultOrgSettings());
-    // NO default lab is seeded (13 Jul 2026 decision, reversing US-A5 AC 8's
-    // 1 Jul call after the first real usability test — Notion amendment
-    // pending): the lab CODE is stamped into every job/batch identifier
-    // forever, so a placeholder "MAIN" would mint synthetic identity into
-    // accredited records. Instead the invited admin lands on the first-run
-    // setup screen and creates the real first lab — which completes setup
-    // (org.setupPending) and assigns them to it (lib/labs/mock.ts createLab).
-    // US-B3 AC 2: the configurable equipment-type list starts with safe
-    // defaults, like every other provisioned list (US-A2 AC 5).
-    seedDefaultEquipmentTypes(id);
+    // NO default lab is seeded either (13 Jul 2026 decision, reversing
+    // US-A5 AC 8's 1 Jul call — Notion amendment pending): the lab CODE is
+    // stamped into every batch identifier forever, so a placeholder "MAIN"
+    // would mint synthetic identity into accredited records. The invited
+    // admin lands on the first-run setup screen and creates the real first
+    // lab, which completes setup (org.setupPending).
     // AC 4: the invited first admin gets a real ACCOUNT (previously only a
     // console line was printed, so a freshly provisioned organisation had no
     // way to log in at all). Mock stand-in for the invite flow: the password
