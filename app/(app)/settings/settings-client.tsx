@@ -174,7 +174,8 @@ function IdentifiersSection({
               ))}
             </div>
             <p className="text-xs text-muted-foreground">
-              Sequences count per lab and per organisation — labs never share a counter.
+              Job sequences count per organisation, batch sequences per lab, and sample sequences
+              restart per job — organisations never share a counter.
             </p>
           </fieldset>
           <div className="space-y-2">
@@ -239,7 +240,7 @@ function BarcodeSection({ barcode }: { barcode: OrgSettings["barcode"] }) {
     <Card>
       <CardHeader>
         <CardTitle>Barcode labels</CardTitle>
-        <CardDescription>Used when printing sample labels (US-C4).</CardDescription>
+        <CardDescription>Used when printing sample labels.</CardDescription>
       </CardHeader>
       <CardContent>
         <form action={submit} className="space-y-4">
@@ -296,7 +297,7 @@ function EquipmentSection({ equipment }: { equipment: OrgSettings["equipment"] }
         <CardTitle>Equipment</CardTitle>
         <CardDescription>
           Calibration due dates inside this window show as &quot;Due soon&quot; — a warning, not a
-          block (US-B3).
+          block.
         </CardDescription>
       </CardHeader>
       <CardContent>
@@ -411,13 +412,13 @@ export function SettingsClient({
       <ListSection
         list="sampleTypes"
         title="Sample types"
-        description="Used at sample registration (US-C1)."
+        description="Used at sample registration."
         items={settings.sampleTypes}
       />
       <ListSection
         list="resultQualifiers"
         title="Result qualifiers"
-        description="Extra qualifiers available at result entry beyond the fixed < and > (US-D4)."
+        description="Extra qualifiers available at result entry beyond the fixed < and >."
         items={settings.resultQualifiers}
       />
       <BarcodeSection barcode={settings.barcode} />

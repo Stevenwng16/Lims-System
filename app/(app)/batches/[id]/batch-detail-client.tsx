@@ -875,7 +875,7 @@ export function BatchDetailClient({
                 <Alert className="mb-3">
                   <AlertDescription>
                     All method steps are complete — the batch is <strong>awaiting review</strong>{" "}
-                    (US-D6). Review is a system phase, not a configurable step.
+                    Review is a system phase, not a configurable step.
                   </AlertDescription>
                 </Alert>
               )}
@@ -904,7 +904,7 @@ export function BatchDetailClient({
                 <p className="pt-2 text-xs text-muted-foreground">
                   Completing “{currentStep.name}” requires selecting the{" "}
                   {currentStep.requiredTypes.map((rt) => rt.typeName).join(" and ")} used — Blocked
-                  items cannot be selected (US-B3).
+                  items cannot be selected.
                 </p>
               )}
               <p className="pt-1 text-xs text-muted-foreground">
@@ -989,7 +989,7 @@ export function BatchDetailClient({
 
           <Card>
             <CardHeader>
-              <CardTitle>Imports (US-D5)</CardTitle>
+              <CardTitle>Imports</CardTitle>
             </CardHeader>
             <CardContent className="space-y-2">
               {batch.imports.length === 0 ? (

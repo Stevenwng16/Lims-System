@@ -316,7 +316,7 @@ export function BatchQueue({
           Show completed &amp; voided
         </label>
         <p className="text-xs text-muted-foreground">
-          Assignment coordinates, it never gates — a cleared colleague can always act (US-D2).
+          Assignment coordinates, it never gates — a cleared colleague can always act.
         </p>
       </div>
     </>

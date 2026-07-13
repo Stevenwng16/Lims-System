@@ -42,10 +42,10 @@ export function SetupForm({
       <CardHeader>
         <CardTitle>Welcome to {PRODUCT_NAME}</CardTitle>
         <CardDescription>
-          {organisationName} has no labs yet. Create your first lab to start working — methods,
-          equipment and batches live in a lab, and colleagues in lab-scoped roles are assigned to
-          one. Jobs are organisation-wide: each requested method routes its work to the method&apos;s
-          lab.
+          {/* Explicit {" "}: Turbopack's JSX transform drops a plain leading
+              space when the text after an expression spans multiple lines. */}
+          {organisationName}
+          {" has no labs yet. Create your first lab to start working — methods, equipment and batches live in a lab, and colleagues in lab-scoped roles are assigned to one. Jobs are organisation-wide: each requested method routes its work to the method's lab."}
         </CardDescription>
       </CardHeader>
       <CardContent>

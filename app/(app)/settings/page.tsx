@@ -88,7 +88,7 @@ export default async function SettingsPage() {
         <CardHeader>
           <CardTitle>Vendor support access</CardTitle>
           <CardDescription>
-            Grant or revoke time-limited support access for the vendor (US-A2).
+            Grant or revoke time-limited support access for the vendor.
           </CardDescription>
         </CardHeader>
         <CardContent>

@@ -92,10 +92,15 @@ function ChecksCell({ item }: { item: EquipmentListItem }) {
 export function EquipmentDialog({
   types,
   labs,
+  canManageTypes,
+  onManageTypes,
   onDone,
 }: {
   types: TypeOption[];
   labs: LabOption[];
+  /** Admin only — shows the jump to the type manager when no types exist. */
+  canManageTypes: boolean;
+  onManageTypes: () => void;
   onDone: () => void;
 }) {
   const [state, submit, pending] = useActionState(createEquipmentAction, initialState);
@@ -118,6 +123,24 @@ export function EquipmentDialog({
             Calibration, routine checks and method links are added on the detail page afterwards.
           </DialogDescription>
         </DialogHeader>
+        {/* Fresh orgs start with NO equipment types (13 Jul 2026) — without
+            this branch the Type dropdown is silently empty and the save can
+            never succeed. */}
+        {activeTypes.length === 0 ? (
+          <div className="space-y-3">
+            <Alert>
+              <AlertDescription>
+                No equipment types are configured yet — every piece of equipment needs one.
+                {!canManageTypes && " Ask an Admin to add them under Manage types."}
+              </AlertDescription>
+            </Alert>
+            {canManageTypes && (
+              <Button size="sm" variant="outline" onClick={onManageTypes}>
+                Manage types
+              </Button>
+            )}
+          </div>
+        ) : (
         <form action={submit} className="space-y-4">
           <input type="hidden" name="typeId" value={typeId} />
           <input type="hidden" name="labId" value={labId} />
@@ -198,6 +221,7 @@ export function EquipmentDialog({
             {pending ? "Saving…" : "Create equipment"}
           </Button>
         </form>
+        )}
       </DialogContent>
     </Dialog>
   );
@@ -435,7 +459,15 @@ export function EquipmentClient({
         condition; there is deliberately no manual &quot;unblock&quot;.
       </p>
 
-      {dialog === "create" && <EquipmentDialog types={types} labs={labs} onDone={() => setDialog(null)} />}
+      {dialog === "create" && (
+        <EquipmentDialog
+          types={types}
+          labs={labs}
+          canManageTypes={canManageTypes}
+          onManageTypes={() => setDialog("types")}
+          onDone={() => setDialog(null)}
+        />
+      )}
       {dialog === "types" && <ManageTypesDialog types={types} onDone={() => setDialog(null)} />}
     </>
   );

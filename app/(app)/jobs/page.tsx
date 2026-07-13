@@ -1,9 +1,11 @@
 import Link from "next/link";
 import { cookies } from "next/headers";
+import { CheckCircle2, Circle } from "lucide-react";
 import { jobApi } from "@/lib/jobs";
 import { methodApi } from "@/lib/methods";
 import { activeLabsForUser, LAB_COOKIE, resolveActiveLab } from "@/lib/lab";
 import { getOrgSettings } from "@/lib/mock-db";
+import { gettingStartedSteps } from "@/lib/onboarding";
 import {
   Breadcrumb,
   BreadcrumbItem,
@@ -11,6 +13,7 @@ import {
   BreadcrumbPage,
 } from "@/components/ui/breadcrumb";
 import { Button } from "@/components/ui/button";
+import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { decodeSession, SESSION_COOKIE } from "@/lib/auth/session";
 import { getOrgIdByName } from "@/lib/mock-db";
 import { resolveJobActor } from "./actions";
@@ -49,6 +52,11 @@ export default async function JobsPage() {
       );
 
   const rows = await jobApi.jobOverview(actor, activeLab?.id ?? null);
+
+  // First-run map for admins (13 Jul 2026): derived live, auto-hides once the
+  // essentials exist. Never shown to lab-scoped roles or support sessions.
+  const gettingStarted =
+    actor.role === "admin" && !actor.isSupport ? gettingStartedSteps(actor.orgId) : null;
 
   const typeOptions = settings.sampleTypes
     .filter((t) => t.active)
@@ -92,6 +100,44 @@ export default async function JobsPage() {
           </Button>
         )}
       </div>
+
+      {gettingStarted && !gettingStarted.complete && (
+        <Card>
+          <CardHeader>
+            <CardTitle className="text-base">Getting started</CardTitle>
+            <CardDescription>
+              Set up the essentials for your organisation — this checklist follows your data and
+              disappears once you&apos;re up and running.
+            </CardDescription>
+          </CardHeader>
+          <CardContent>
+            <ul className="space-y-2 text-sm">
+              {gettingStarted.steps.map((step) => (
+                <li key={step.key} className="flex items-center gap-2">
+                  {step.done ? (
+                    <CheckCircle2 className="size-4 shrink-0 text-emerald-600 dark:text-emerald-500" />
+                  ) : (
+                    <Circle className="size-4 shrink-0 text-muted-foreground" />
+                  )}
+                  {step.done ? (
+                    <span className="text-muted-foreground line-through">{step.label}</span>
+                  ) : (
+                    <Link
+                      href={step.href}
+                      className="text-primary underline-offset-4 hover:underline"
+                    >
+                      {step.label}
+                    </Link>
+                  )}
+                  {step.optional && !step.done && (
+                    <span className="text-xs text-muted-foreground">optional</span>
+                  )}
+                </li>
+              ))}
+            </ul>
+          </CardContent>
+        </Card>
+      )}
 
       <JobOverview
         jobLabel={jobLabel}
