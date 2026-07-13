@@ -294,6 +294,18 @@ function buildStepsRail(batch: MockBatch, pinned: MethodVersion): StepRailEntry[
   });
 }
 
+/** Org-wide jobs (13 Jul 2026): a sample is relevant to a lab when one of its
+ * requested methods routes work there — jobs carry no lab of their own. */
+function sampleRoutesToLab(orgId: string, requestedMethodIds: string[], labId: string): boolean {
+  for (const id of requestedMethodIds) {
+    const method = mockDb.methods.get(id);
+    if (method && method.orgId === orgId && currentMethodVersion(method).labId === labId) {
+      return true;
+    }
+  }
+  return false;
+}
+
 /** AC 3 for ONE sample — returns an error message or null. */
 function sampleIneligible(
   orgId: string,
@@ -305,7 +317,14 @@ function sampleIneligible(
   const found = findSample(orgId, sampleId);
   if (!found) return `Unknown sample ${sampleId}.`;
   const { job, sample } = found;
-  if (job.labId !== labId) return `Sample ${sampleId} belongs to another lab than this batch.`;
+  // The batch's lab must be where the sample's work routes (or the sample
+  // requests this very method) — replaces the old same-lab-as-job check.
+  if (
+    !sample.requestedMethodIds.includes(methodId) &&
+    !sampleRoutesToLab(orgId, sample.requestedMethodIds, labId)
+  ) {
+    return `Sample ${sampleId} has no requested work in this batch's lab.`;
+  }
   if (job.voided) return `Sample ${sampleId} belongs to a voided ${getOrgSettings(orgId).jobLabel.toLowerCase()}.`;
   if (sample.voided) return `Sample ${sampleId} is voided.`;
   if (!sampleCanBatch(sample)) {
@@ -328,9 +347,17 @@ function eligibleSamples(
   const typeNames = new Map(getOrgSettings(orgId).sampleTypes.map((t) => [t.id, t.name] as const));
   const out: EligibleSample[] = [];
   for (const job of mockDb.jobs.values()) {
-    if (job.orgId !== orgId || job.labId !== labId || job.voided) continue;
+    if (job.orgId !== orgId || job.voided) continue;
     for (const sample of job.samples) {
       if (sample.voided || !sampleCanBatch(sample)) continue;
+      // Org-wide jobs: the picker offers samples whose requested work routes
+      // to this lab (or that request this very method) — from ANY job.
+      if (
+        !sample.requestedMethodIds.includes(methodId) &&
+        !sampleRoutesToLab(orgId, sample.requestedMethodIds, labId)
+      ) {
+        continue;
+      }
       if (openBatchOfMethodContaining(orgId, sample.id, methodId, excludeBatchId)) continue;
       out.push({
         id: sample.id,
@@ -569,10 +596,13 @@ export const mockBatchApi: BatchApi = {
   async listBatches(actor, activeLabId): Promise<BatchListRow[]> {
     return [...mockDb.batches.values()]
       .filter((b) => b.orgId === actor.orgId && canSeeLab(actor, b.labId))
-      // Work screen: scoped to the active lab; org-wide ONLY for a support
-      // session (same rule as the job overview — never "all labs" for a
-      // scoped user with no active lab).
-      .filter((b) => (actor.isSupport && activeLabId === null) || b.labId === activeLabId)
+      // Work screen: scoped to the active lab; org-wide (null) only for a
+      // support session or an admin's "All labs" view (13 Jul 2026) — never
+      // "all labs" for a scoped user with no active lab.
+      .filter((b) => {
+        if (activeLabId === null) return actor.isSupport || actor.role === "admin";
+        return b.labId === activeLabId;
+      })
       .map((b) => {
         const method = mockDb.methods.get(b.methodId);
         const pinned = method ? methodVersionByNumber(method, b.methodVersion) : null;

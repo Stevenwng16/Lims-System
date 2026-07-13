@@ -31,6 +31,7 @@ import {
   DialogHeader,
   DialogTitle,
 } from "@/components/ui/dialog";
+import { DateInput } from "@/components/ui/date-input";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import {
@@ -248,20 +249,18 @@ function CalibrationDialog({ detail, onDone }: { detail: EquipmentDetail; onDone
             </div>
             <div className="space-y-2">
               <Label htmlFor="cal-last">Last calibration</Label>
-              <Input
+              <DateInput
                 id="cal-last"
                 name="lastDate"
-                type="date"
                 defaultValue={v?.lastDate ?? cal.lastDate ?? ""}
                 className="w-40"
               />
             </div>
             <div className="space-y-2">
               <Label htmlFor="cal-due">Due date (manual)</Label>
-              <Input
+              <DateInput
                 id="cal-due"
                 name="dueDate"
-                type="date"
                 defaultValue={v?.dueDate ?? (cal.dueDateManual ? (cal.dueDate ?? "") : "")}
                 className="w-40"
               />

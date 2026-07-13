@@ -98,6 +98,32 @@ export const mockSettingsApi: SettingsApi = {
           "Sample number format must contain the {JOB} token — sample sequences restart per job, so the job number is what keeps sample IDs unique.",
       };
     }
+    // Jobs are ORGANISATION-wide (13 Jul 2026): a job may span several labs,
+    // so job numbers must not name one — and sample numbers follow the job.
+    // {LAB} stays for batch numbers, where it is REQUIRED: batch sequences
+    // run per lab, so without the lab code two labs' batches would render
+    // identical numbers.
+    if (/\{LAB\}/.test(identifiers.jobFormat)) {
+      return {
+        status: "error",
+        message:
+          "Job number format: the {LAB} token is not available — jobs are organisation-wide (one order may span several labs).",
+      };
+    }
+    if (/\{LAB\}/.test(identifiers.sampleFormat)) {
+      return {
+        status: "error",
+        message:
+          "Sample number format: the {LAB} token is not available — samples follow the organisation-wide job number.",
+      };
+    }
+    if (!/\{LAB\}/.test(identifiers.batchFormat)) {
+      return {
+        status: "error",
+        message:
+          "Batch number format must contain the {LAB} token — batch sequences run per lab, so the lab code is what keeps batch numbers unique.",
+      };
+    }
     // A period reset must be reflected by a period token in the format, or the
     // rendered number repeats every period and reissues IDs (audit finding 9).
     // {JOB} in the sample format carries the job's period, so it is exempt.

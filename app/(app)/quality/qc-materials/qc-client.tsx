@@ -22,6 +22,7 @@ import {
   DialogHeader,
   DialogTitle,
 } from "@/components/ui/dialog";
+import { DateInput } from "@/components/ui/date-input";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import {
@@ -233,10 +234,9 @@ function MaterialDialog({
               </div>
               <div className="space-y-2">
                 <Label htmlFor="qc-expiry">Expiry{isBlank ? " (optional)" : ""}</Label>
-                <Input
+                <DateInput
                   id="qc-expiry"
                   name="expiryDate"
-                  type="date"
                   defaultValue={v?.expiryDate ?? (mode === "new-lot" ? "" : (source?.expiryDate ?? ""))}
                   className="w-40"
                 />

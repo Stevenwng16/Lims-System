@@ -6,6 +6,7 @@ import { useRouter } from "next/navigation";
 import type { JobOverviewRow, JobStatus } from "@/lib/jobs";
 import { Badge } from "@/components/ui/badge";
 import { Checkbox } from "@/components/ui/checkbox";
+import { DateInput } from "@/components/ui/date-input";
 import { Input } from "@/components/ui/input";
 import {
   Select,
@@ -171,9 +172,9 @@ export function JobOverview({
 
         <label className="flex items-center gap-1 text-sm text-muted-foreground">
           Received
-          <Input type="date" value={from} onChange={(e) => setFrom(e.target.value)} className="h-8 w-36" />
+          <DateInput value={from} onChange={setFrom} className="h-8 w-32" aria-label="Received from" />
           –
-          <Input type="date" value={to} onChange={(e) => setTo(e.target.value)} className="h-8 w-36" />
+          <DateInput value={to} onChange={setTo} className="h-8 w-32" aria-label="Received until" />
         </label>
 
         <button

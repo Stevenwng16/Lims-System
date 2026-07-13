@@ -31,9 +31,15 @@ export function renderTemplate(template: string, ctx: IdContext): string {
     .replace(SEQ_TOKEN, (_, zeros: string) => String(ctx.seq).padStart(zeros.length, "0"));
 }
 
-/** Example previews the way the Settings screen shows them. */
-export function previewIds(formats: { jobFormat: string; sampleFormat: string; batchFormat: string }) {
-  const ctx: IdContext = { lab: "MAIN", year: 2026, month: 7, seq: 1 };
+/** Example previews the way the Settings screen shows them — rendered with a
+ * REAL lab code of the organisation (the viewer's active lab), never a
+ * placeholder: since 13 Jul 2026 no "MAIN" lab exists to preview with. */
+export function previewIds(
+  formats: { jobFormat: string; sampleFormat: string; batchFormat: string },
+  labCode: string,
+) {
+  const now = new Date();
+  const ctx: IdContext = { lab: labCode, year: now.getFullYear(), month: now.getMonth() + 1, seq: 1 };
   const job = renderTemplate(formats.jobFormat, ctx);
   return {
     job,

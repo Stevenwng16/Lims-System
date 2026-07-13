@@ -25,6 +25,7 @@ import {
   DialogHeader,
   DialogTitle,
 } from "@/components/ui/dialog";
+import { DateInput } from "@/components/ui/date-input";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import {
@@ -190,7 +191,7 @@ function ConsultationDialog({ jobId, sample, onDone }: { jobId: string; sample: 
           </div>
           <div className="space-y-2">
             <Label htmlFor="when">When (optional)</Label>
-            <Input id="when" name="when" type="date" />
+            <DateInput id="when" name="when" />
           </div>
           <div className="space-y-2">
             <Label htmlFor="outcome">Outcome</Label>

@@ -27,21 +27,28 @@ export async function generateMetadata() {
 }
 
 // US-C2 Job overview — the post-login landing page (US-A3 AC 5). Read-only,
-// scoped to the active lab shown in the shell (AC 1). Switching labs happens in
-// the shell, not here.
+// filtered to jobs with work in the active lab shown in the shell (AC 1 as
+// amended 13 Jul 2026 — jobs are org-wide; admins default to "All labs").
+// Switching labs happens in the shell, not here.
 export default async function JobsPage() {
   const actor = await resolveJobActor();
   const settings = getOrgSettings(actor.orgId);
   const jobLabel = settings.jobLabel;
   const canCreate = actor.role === "admin" || actor.role === "lab-manager";
 
-  // Active lab from the shell (AC 1). A vendor support session is org-wide.
+  // Active lab from the shell (AC 1). A vendor support session is org-wide;
+  // so is an admin's "All labs" view (13 Jul 2026 decision) — activeLab null
+  // means org-wide for both.
   const cookieStore = await cookies();
   const activeLab = actor.isSupport
     ? null
-    : resolveActiveLab(activeLabsForUser(actor.labs, actor.orgId), cookieStore.get(LAB_COOKIE)?.value);
+    : resolveActiveLab(
+        activeLabsForUser(actor.labs, actor.orgId, actor.role),
+        cookieStore.get(LAB_COOKIE)?.value,
+        actor.role === "admin",
+      );
 
-  const rows = await jobApi.jobOverview(actor, actor.isSupport ? null : (activeLab?.id ?? null));
+  const rows = await jobApi.jobOverview(actor, activeLab?.id ?? null);
 
   const typeOptions = settings.sampleTypes
     .filter((t) => t.active)
@@ -74,7 +81,9 @@ export default async function JobsPage() {
               ? "All labs (support session)"
               : activeLab
                 ? `${activeLab.name} lab`
-                : "No active lab"}
+                : actor.role === "admin"
+                  ? "All labs"
+                  : "No active lab"}
           </p>
         </div>
         {canCreate && (

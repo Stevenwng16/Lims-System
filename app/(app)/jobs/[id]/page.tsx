@@ -1,7 +1,7 @@
 import { notFound } from "next/navigation";
 import { batchesForJobSamples } from "@/lib/batches";
 import { sampleStatus } from "@/lib/batches/progress";
-import { deriveJobStatus, isJobOverdue, jobApi, type JobView } from "@/lib/jobs";
+import { deriveJobStatus, involvedLabIds, isJobOverdue, jobApi, type JobView } from "@/lib/jobs";
 import { labApi } from "@/lib/labs";
 import { methodApi } from "@/lib/methods";
 import { getOrgSettings, type MockJob } from "@/lib/mock-db";
@@ -71,13 +71,18 @@ export default async function JobDetailPage({ params }: { params: Promise<{ id: 
   // voided job (a closed record must not get physical labels; audit finding).
   const canPrint = actor.role !== "read-only" && !job.voided;
 
-  // Options for the Add-sample dialog (AC 7): active types + active methods of
-  // the job's lab.
+  // Options for the Add-sample dialog (AC 7): active types + every active
+  // method of the organisation (org-wide jobs, 13 Jul 2026) — the method's
+  // lab (in the label) routes the work.
   const sampleTypes = settings.sampleTypes.filter((t) => t.active).map((t) => ({ id: t.id, name: t.name }));
+  const labList = await labApi.listLabs(actor.orgId);
+  const labNamesById = new Map(labList.map((l) => [l.id, l.name] as const));
   const labMethods = allMethods
-    .filter((m) => m.status === "active" && m.labId === job.labId)
-    .map((m) => ({ id: m.id, label: `${m.name} (${m.code})` }));
-  const labName = (await labApi.listLabs(actor.orgId)).find((l) => l.id === job.labId)?.name ?? job.labId;
+    .filter((m) => m.status === "active")
+    .map((m) => ({ id: m.id, label: `${m.name} (${m.code}) · ${labNamesById.get(m.labId) ?? m.labId}` }));
+  // The lab(s) shown for the job are DERIVED from its requested methods.
+  const labName =
+    [...involvedLabIds(job)].map((id) => labNamesById.get(id) ?? id).sort().join(", ") || "—";
 
   return (
     <div className="mx-auto max-w-3xl space-y-6">

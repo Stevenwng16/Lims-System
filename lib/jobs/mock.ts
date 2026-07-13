@@ -27,35 +27,52 @@ function jobKey(orgId: string, jobNumber: string): string {
   return `${orgId}:${jobNumber}`;
 }
 
-function canManage(actor: JobActor): boolean {
-  // US-C1 authorization: only Admin / Lab manager create & manage jobs.
-  return actor.role === "admin" || actor.role === "lab-manager";
-}
-
-function labNameById(labId: string): string {
-  return mockDb.labs.get(labId)?.name ?? labId;
-}
-
-function canSeeLab(actor: JobActor, labId: string): boolean {
-  // Admins and support sessions see the whole org; others their own lab(s).
-  if (actor.role === "admin" || actor.isSupport) return true;
-  return actor.labs.includes(labNameById(labId));
-}
-
-function canManageLab(actor: JobActor, labId: string): string | null {
-  if (!canManage(actor)) return "Only Admins and Lab managers can manage jobs.";
-  if (actor.role === "admin" || actor.isSupport) return null;
-  return actor.labs.includes(labNameById(labId))
+function canManage(actor: JobActor): string | null {
+  // US-C1 authorization (13 Jul 2026 amendment: jobs are ORG-wide): Admins and
+  // Lab managers create & manage jobs across the organisation — registration
+  // is a reception function; the lab boundary governs EXECUTION (batches),
+  // which stays strictly lab-scoped.
+  return actor.role === "admin" || actor.role === "lab-manager"
     ? null
-    : "You can only manage jobs in your own lab(s).";
+    : "Only Admins and Lab managers can manage jobs.";
 }
 
-// AC 14: requested methods must be ACTIVE methods of the job's lab.
-function activeMethodIdsForLab(orgId: string, labId: string): Set<string> {
+/** The labs a job involves = the labs of its requested methods (job-level and
+ * per sample). Jobs carry no lab of their own (13 Jul 2026 decision) — the
+ * method, being lab-scoped masterdata, routes the work. */
+export function involvedLabIds(job: MockJob): Set<string> {
+  const ids = new Set<string>();
+  const methodIds = [
+    ...job.requestedMethodIds,
+    ...job.samples.flatMap((s) => s.requestedMethodIds),
+  ];
+  for (const id of methodIds) {
+    const method = mockDb.methods.get(id);
+    if (method && method.orgId === job.orgId) ids.add(currentMethodVersion(method).labId);
+  }
+  return ids;
+}
+
+function canSee(actor: JobActor, job: MockJob): boolean {
+  // Admins and support sessions see the whole org; lab-scoped roles see jobs
+  // with work (requested methods) in their lab(s). A job with no methods yet
+  // stays visible org-wide so it can never vanish for everyone.
+  if (actor.role === "admin" || actor.isSupport) return true;
+  const involved = involvedLabIds(job);
+  if (involved.size === 0) return true;
+  for (const labId of involved) {
+    const name = mockDb.labs.get(labId)?.name;
+    if (name && actor.labs.includes(name)) return true;
+  }
+  return false;
+}
+
+// AC 14 (amended 13 Jul 2026): requested methods must be ACTIVE methods of the
+// organisation — any lab's; the method's lab routes the work.
+function activeMethodIds(orgId: string): Set<string> {
   const ids = new Set<string>();
   for (const method of mockDb.methods.values()) {
-    if (method.orgId !== orgId || method.status !== "active") continue;
-    if (currentMethodVersion(method).labId === labId) ids.add(method.id);
+    if (method.orgId === orgId && method.status === "active") ids.add(method.id);
   }
   return ids;
 }
@@ -122,11 +139,10 @@ function methodCodes(orgId: string, ids: string[]): string {
 // to inactive options remain rejected.
 function validateSample(
   orgId: string,
-  labId: string,
   s: SampleInput,
   grandfather?: { typeId: string; methodIds: string[] },
 ): string | null {
-  const activeMethods = activeMethodIdsForLab(orgId, labId);
+  const activeMethods = activeMethodIds(orgId);
   const typeOk = SAMPLE_TYPE_IDS(orgId).has(s.typeId) || s.typeId === grandfather?.typeId;
   if (!typeOk) return "Each sample needs a valid sample type.";
   if (!s.description.trim()) return "Each sample needs a description.";
@@ -135,7 +151,7 @@ function validateSample(
   }
   for (const id of s.requestedMethodIds) {
     if (!activeMethods.has(id) && !grandfather?.methodIds.includes(id)) {
-      return "Each sample's requested methods must be active methods of the job's lab.";
+      return "Each sample's requested methods must be active methods of the organisation.";
     }
   }
   if (s.condition === "deviation" && s.deviationType === "none") {
@@ -144,34 +160,28 @@ function validateSample(
   return null;
 }
 
-function validate(actor: JobActor, input: JobInput, existing?: MockJob): string | null {
-  const lab = mockDb.labs.get(input.labId);
-  if (!lab || lab.orgId !== actor.orgId) return "Choose the lab this job belongs to.";
-  // A new job cannot start in an inactive lab; an existing job stays put.
-  if (lab.status !== "active" && input.labId !== existing?.labId) {
-    return "Jobs cannot be registered in an inactive lab.";
-  }
+function validate(actor: JobActor, input: JobInput): string | null {
   if (!input.customer.trim()) return "The customer name is required.";
   if (!input.receivedAt.trim()) return "The date and time of receipt are required.";
   const dueError = dueDateError(input.dueDate);
   if (dueError) return dueError;
   if (input.samples.length < 1) return "A job needs at least one sample.";
 
-  const activeMethods = activeMethodIdsForLab(actor.orgId, input.labId);
+  const active = activeMethodIds(actor.orgId);
   for (const id of input.requestedMethodIds) {
-    if (!activeMethods.has(id)) return "Requested methods must be active methods of the job's lab.";
+    if (!active.has(id)) return "Requested methods must be active methods of the organisation.";
   }
 
   for (const s of input.samples) {
-    const error = validateSample(actor.orgId, input.labId, s);
+    const error = validateSample(actor.orgId, s);
     if (error) return error;
   }
   return null;
 }
 
-function buildSample(orgId: string, labId: string, jobNumber: string, receivedAt: string, s: SampleInput): MockSample {
+function buildSample(orgId: string, jobNumber: string, receivedAt: string, s: SampleInput): MockSample {
   return {
-    id: generateSampleId(orgId, jobNumber, labId, receivedAt),
+    id: generateSampleId(orgId, jobNumber, receivedAt),
     jobId: jobNumber,
     typeId: s.typeId,
     description: s.description.trim(),
@@ -194,10 +204,15 @@ function buildSample(orgId: string, labId: string, jobNumber: string, receivedAt
 
 function toListItem(job: MockJob): JobListItem {
   const live = job.samples.filter((s) => !s.voided);
+  // Jobs are org-wide: the "lab" shown is the set of labs the work routes to.
+  const labNames = [...involvedLabIds(job)]
+    .map((id) => mockDb.labs.get(id)?.name ?? id)
+    .sort()
+    .join(", ");
   return {
     id: job.id,
     customer: job.customer,
-    labName: labNameById(job.labId),
+    labName: labNames || "—",
     receivedAt: job.receivedAt,
     sampleCount: live.length,
     awaitingDecision: live.filter((s) => s.acceptance === null).length,
@@ -288,7 +303,7 @@ function loadJobForWrite(
 ): { job: import("@/lib/mock-db").MockJob } | { error: string } {
   const job = mockDb.jobs.get(jobKey(actor.orgId, jobId));
   if (!job || job.orgId !== actor.orgId) return { error: "Unknown job." };
-  const denied = canManageLab(actor, job.labId);
+  const denied = canManage(actor);
   if (denied) return { error: denied };
   if (job.voided && !opts.allowVoided) {
     return { error: "This job is voided (a closed record) and cannot be changed." };
@@ -299,7 +314,7 @@ function loadJobForWrite(
 export const mockJobApi: JobApi = {
   async listJobs(actor): Promise<JobListItem[]> {
     return [...mockDb.jobs.values()]
-      .filter((j) => j.orgId === actor.orgId && canSeeLab(actor, j.labId))
+      .filter((j) => j.orgId === actor.orgId && canSee(actor, j))
       .map(toListItem);
   },
 
@@ -309,11 +324,16 @@ export const mockJobApi: JobApi = {
       getOrgSettings(actor.orgId).sampleTypes.map((t) => [t.id, t.name] as const),
     );
     return [...mockDb.jobs.values()]
-      .filter((j) => j.orgId === actor.orgId && canSeeLab(actor, j.labId))
-      // Scoped to the active lab (US-C2 AC 1). Org-wide (null) is ONLY for a
-      // support session — a scoped user with no active lab gets an empty list,
-      // never every lab's jobs (audit finding 5).
-      .filter((j) => (actor.isSupport && activeLabId === null) || j.labId === activeLabId)
+      .filter((j) => j.orgId === actor.orgId && canSee(actor, j))
+      // Lab filter: null = org-wide, allowed for a support session or an
+      // admin's "All labs" view (13 Jul 2026); a lab id shows the jobs whose
+      // requested methods route work to that lab. A scoped user with no
+      // active lab still gets an empty list, never every lab's jobs
+      // (audit finding 5).
+      .filter((j) => {
+        if (activeLabId === null) return actor.isSupport || actor.role === "admin";
+        return involvedLabIds(j).has(activeLabId);
+      })
       .map((j) => {
         const row = overviewRow(j, now);
         const ids = row.sampleTypeIds;
@@ -325,18 +345,18 @@ export const mockJobApi: JobApi = {
 
   async getJob(actor, jobId) {
     const job = mockDb.jobs.get(jobKey(actor.orgId, jobId));
-    if (!job || job.orgId !== actor.orgId || !canSeeLab(actor, job.labId)) return null;
+    if (!job || job.orgId !== actor.orgId || !canSee(actor, job)) return null;
     return job;
   },
 
   async createJob(actor, input): Promise<JobActionResult> {
-    const denied = canManageLab(actor, input.labId);
+    const denied = canManage(actor);
     if (denied) return { status: "error", message: denied };
     const error = validate(actor, input);
     if (error) return { status: "error", message: error };
 
     // Consume the immutable job number, then the per-job sample IDs.
-    const jobNumber = generateJobNumber(actor.orgId, input.labId, input.receivedAt);
+    const jobNumber = generateJobNumber(actor.orgId, input.receivedAt);
     // Never overwrite an already-issued number (defends against a misconfigured
     // reset period reissuing IDs — audit finding 9; hard-never "reissue an ID").
     if (mockDb.jobs.has(jobKey(actor.orgId, jobNumber))) {
@@ -350,7 +370,6 @@ export const mockJobApi: JobApi = {
     mockDb.jobs.set(jobKey(actor.orgId, jobNumber), {
       id: jobNumber,
       orgId: actor.orgId,
-      labId: input.labId,
       customer: input.customer.trim(),
       customerRef: input.customerRef.trim(),
       receivedAt: input.receivedAt,
@@ -363,7 +382,7 @@ export const mockJobApi: JobApi = {
       voided: false,
       createdAt: now,
       createdBy: actor.email,
-      samples: input.samples.map((s) => buildSample(actor.orgId, input.labId, jobNumber, input.receivedAt, s)),
+      samples: input.samples.map((s) => buildSample(actor.orgId, jobNumber, input.receivedAt, s)),
       events: [],
     });
     const created = mockDb.jobs.get(jobKey(actor.orgId, jobNumber))!;
@@ -380,19 +399,18 @@ export const mockJobApi: JobApi = {
     if ("error" in loaded) return { status: "error", message: loaded.error };
     const { job } = loaded;
 
-    // Header validation (the lab is fixed after registration — the ID embeds
-    // its code). Job-level methods a job ALREADY references stay valid after
-    // deactivation; only NEW references must be active (findings 8/12/20).
+    // Header validation. Job-level methods a job ALREADY references stay valid
+    // after deactivation; only NEW references must be active (findings 8/12/20).
     if (!input.customer.trim()) return { status: "error", message: "The customer name is required." };
     if (!input.receivedAt.trim()) {
       return { status: "error", message: "The date and time of receipt are required." };
     }
     const dueError = dueDateError(input.dueDate);
     if (dueError) return { status: "error", message: dueError }; // pass-4 fix (see dueDateError)
-    const activeMethods = activeMethodIdsForLab(actor.orgId, job.labId);
+    const activeMethods = activeMethodIds(actor.orgId);
     for (const id of input.requestedMethodIds) {
       if (!activeMethods.has(id) && !job.requestedMethodIds.includes(id)) {
-        return { status: "error", message: "Requested methods must be active methods of the job's lab." };
+        return { status: "error", message: "Requested methods must be active methods of the organisation." };
       }
     }
 
@@ -407,7 +425,7 @@ export const mockJobApi: JobApi = {
           return { status: "error", message: "Unknown sample in the submission — reload and try again." };
         }
         if (existing.voided) continue; // voided samples are frozen; ignore edits
-        const error = validateSample(actor.orgId, job.labId, s, {
+        const error = validateSample(actor.orgId, s, {
           typeId: existing.typeId,
           methodIds: existing.requestedMethodIds,
         });
@@ -428,7 +446,7 @@ export const mockJobApi: JobApi = {
           }
         }
       } else {
-        const error = validateSample(actor.orgId, job.labId, s);
+        const error = validateSample(actor.orgId, s);
         if (error) return { status: "error", message: error };
       }
     }
@@ -492,7 +510,7 @@ export const mockJobApi: JobApi = {
         const existing = byId.get(s.id)!;
         if (!existing.voided) applySampleEdits(existing, s);
       } else {
-        const added = buildSample(actor.orgId, job.labId, job.id, job.receivedAt, s);
+        const added = buildSample(actor.orgId, job.id, job.receivedAt, s);
         job.samples.push(added);
         changes.push(`sample ${added.id} added (${added.description})`);
       }
@@ -580,12 +598,11 @@ export const mockJobApi: JobApi = {
     const loaded = loadJobForWrite(actor, jobId);
     if ("error" in loaded) return { status: "error", message: loaded.error };
     const { job } = loaded;
-    // Validate ONLY the new sample against the job's (fixed) lab — never
-    // re-check the job's own header/lab state, which may have changed since
-    // registration (audit findings 2/4).
-    const error = validateSample(actor.orgId, job.labId, input);
+    // Validate ONLY the new sample — never re-check the job's own header
+    // state, which may have changed since registration (audit findings 2/4).
+    const error = validateSample(actor.orgId, input);
     if (error) return { status: "error", message: error };
-    const added = buildSample(actor.orgId, job.labId, job.id, job.receivedAt, input);
+    const added = buildSample(actor.orgId, job.id, job.receivedAt, input);
     job.samples.push(added);
     addJobEvent(job, actor.email, `Sample ${added.id} added (${added.description})`); // pass-4 fix
     return { status: "success", jobId };

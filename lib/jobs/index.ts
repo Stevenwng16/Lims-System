@@ -6,4 +6,4 @@ export const jobApi: JobApi = mockJobApi;
 
 export type * from "./types";
 export { peekJobNumber } from "./ids";
-export { deriveJobStatus, isJobOverdue } from "./mock";
+export { deriveJobStatus, involvedLabIds, isJobOverdue } from "./mock";

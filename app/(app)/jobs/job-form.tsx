@@ -1,6 +1,6 @@
 "use client";
 
-import { useMemo, useState } from "react";
+import { useState } from "react";
 import { useActionState } from "react";
 import { X } from "lucide-react";
 import type { DeviationType } from "@/lib/mock-db";
@@ -8,6 +8,7 @@ import { createJobAction, updateJobAction, type JobFormState } from "./actions";
 import { Alert, AlertDescription } from "@/components/ui/alert";
 import { Button } from "@/components/ui/button";
 import { Checkbox } from "@/components/ui/checkbox";
+import { DateInput, DateTimeInput } from "@/components/ui/date-input";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import {
@@ -21,8 +22,7 @@ import { Textarea } from "@/components/ui/textarea";
 
 const initialState: JobFormState = {};
 
-type LabOption = { id: string; name: string };
-type MethodOption = { id: string; label: string; labId: string };
+type MethodOption = { id: string; label: string };
 type TypeOption = { id: string; name: string };
 
 type SampleRow = {
@@ -60,7 +60,6 @@ function blankSample(): SampleRow {
 }
 
 export type JobFormInitial = {
-  labId: string;
   customer: string;
   customerRef: string;
   receivedAt: string;
@@ -72,22 +71,24 @@ export type JobFormInitial = {
   samples: SampleRow[];
 };
 
+// Jobs are ORGANISATION-wide (13 Jul 2026): the form has no lab — every active
+// method of the organisation can be requested, and each method routes its work
+// to the method's own lab (execution happens in lab-scoped batches).
 export function JobForm({
   jobLabel,
-  labs,
   methods,
   sampleTypes,
-  previews,
+  preview,
   mode = "create",
   jobId,
   jobNumber,
   initial,
 }: {
   jobLabel: string;
-  labs: LabOption[];
   methods: MethodOption[];
   sampleTypes: TypeOption[];
-  previews: Record<string, string>;
+  /** Example next number (create mode) — the real one is fixed on save. */
+  preview?: string;
   mode?: "create" | "edit";
   jobId?: string;
   jobNumber?: string;
@@ -98,24 +99,10 @@ export function JobForm({
     isEdit ? updateJobAction : createJobAction,
     initialState,
   );
-  const [labId, setLabId] = useState(initial?.labId ?? labs[0]?.id ?? "");
   const [jobMethods, setJobMethods] = useState<string[]>(initial?.jobMethods ?? []);
   const [samples, setSamples] = useState<SampleRow[]>(
     initial?.samples?.length ? initial.samples : [blankSample()],
   );
-
-  // Only the selected lab's methods are offered (AC 14).
-  const labMethods = useMemo(() => methods.filter((m) => m.labId === labId), [methods, labId]);
-
-  // Method ids are lab-scoped: switching lab clears stale selections so a save
-  // can't carry another lab's method ids (audit findings 6/14). Not reachable
-  // in edit mode (the lab is fixed after registration).
-  const changeLab = (v: string | null) => {
-    if (!v) return;
-    setLabId(v);
-    setJobMethods([]);
-    setSamples((rows) => rows.map((s) => ({ ...s, requestedMethodIds: [] })));
-  };
 
   const patchSample = (key: string, patch: Partial<SampleRow>) =>
     setSamples((rows) => rows.map((s) => (s.key === key ? { ...s, ...patch } : s)));
@@ -153,19 +140,29 @@ export function JobForm({
   return (
     <form action={submit} className="space-y-6">
       {isEdit && <input type="hidden" name="jobId" value={jobId} />}
-      <input type="hidden" name="labId" value={labId} />
       <input type="hidden" name="samplesJson" value={samplesJson} />
 
       <div className="rounded-md border bg-muted/30 p-3 text-sm">
         {jobLabel} number:{" "}
         <span className="font-mono">
-          {isEdit ? jobNumber : previews[labId] || "assigned on registration"}
+          {isEdit ? jobNumber : preview || "assigned on registration"}
         </span>{" "}
         {!isEdit && (
           <span className="text-muted-foreground">— example; the final number is fixed on save.</span>
         )}
         {isEdit && <span className="text-muted-foreground">— fixed; never reissued.</span>}
       </div>
+
+      {/* Fresh orgs start with NO sample types (13 Jul 2026) — without this
+          notice the type dropdowns are silently empty and the save fails. */}
+      {sampleTypes.length === 0 && (
+        <Alert>
+          <AlertDescription>
+            No sample types are configured yet — every sample needs one. Add them under
+            Admin ▸ Settings ▸ Sample types first.
+          </AlertDescription>
+        </Alert>
+      )}
 
       <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
         <div className="space-y-2">
@@ -177,38 +174,8 @@ export function JobForm({
           <Input id="customerRef" name="customerRef" defaultValue={initial?.customerRef} />
         </div>
         <div className="space-y-2">
-          <Label htmlFor="labId-select">Lab</Label>
-          {isEdit ? (
-            <Input
-              id="labId-select"
-              value={labs.find((l) => l.id === labId)?.name ?? ""}
-              readOnly
-              className="bg-muted"
-            />
-          ) : (
-            <Select value={labId} onValueChange={changeLab}>
-              <SelectTrigger id="labId-select">
-                <SelectValue placeholder="Choose a lab" />
-              </SelectTrigger>
-              <SelectContent>
-                {labs.map((lab) => (
-                  <SelectItem key={lab.id} value={lab.id}>
-                    {lab.name}
-                  </SelectItem>
-                ))}
-              </SelectContent>
-            </Select>
-          )}
-        </div>
-        <div className="space-y-2">
           <Label htmlFor="receivedAt">Received (date &amp; time)</Label>
-          <Input
-            id="receivedAt"
-            name="receivedAt"
-            type="datetime-local"
-            defaultValue={initial?.receivedAt}
-            required
-          />
+          <DateTimeInput id="receivedAt" name="receivedAt" defaultValue={initial?.receivedAt} required />
         </div>
         <div className="space-y-2">
           <Label htmlFor="priority">Priority</Label>
@@ -225,17 +192,17 @@ export function JobForm({
         </div>
         <div className="space-y-2">
           <Label htmlFor="dueDate">Due date (optional)</Label>
-          <Input id="dueDate" name="dueDate" type="date" defaultValue={initial?.dueDate} />
+          <DateInput id="dueDate" name="dueDate" defaultValue={initial?.dueDate} />
         </div>
       </div>
 
       <div className="space-y-2">
         <Label>Requested methods (default for all samples)</Label>
-        {labMethods.length === 0 ? (
-          <p className="text-sm text-muted-foreground">No active methods in this lab yet.</p>
+        {methods.length === 0 ? (
+          <p className="text-sm text-muted-foreground">No active methods yet.</p>
         ) : (
           <div className="flex flex-wrap gap-3">
-            {labMethods.map((m) => (
+            {methods.map((m) => (
               <label key={m.id} className="flex items-center gap-2 text-sm">
                 <Checkbox
                   name="requestedMethodIds"
@@ -343,13 +310,13 @@ export function JobForm({
               </div>
             </div>
 
-            {labMethods.length > 0 && (
+            {methods.length > 0 && (
               <div className="space-y-1">
                 <Label className="text-xs text-muted-foreground">
                   Requested methods (leave empty to use the job&apos;s default)
                 </Label>
                 <div className="flex flex-wrap gap-3">
-                  {labMethods.map((m) => (
+                  {methods.map((m) => (
                     <label key={m.id} className="flex items-center gap-2 text-sm">
                       <Checkbox
                         checked={s.requestedMethodIds.includes(m.id)}

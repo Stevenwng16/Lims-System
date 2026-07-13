@@ -24,7 +24,11 @@ export default async function ImportConfigsPage() {
   const cookieStore = await cookies();
   const activeLab = actor.isSupport
     ? null
-    : resolveActiveLab(activeLabsForUser(actor.labs, actor.orgId), cookieStore.get(LAB_COOKIE)?.value);
+    : resolveActiveLab(
+        activeLabsForUser(actor.labs, actor.orgId, actor.role),
+        cookieStore.get(LAB_COOKIE)?.value,
+        actor.role === "admin",
+      );
   if (!activeLab) redirect("/batches");
 
   const configs = await batchApi.listImportConfigs(actor, activeLab.id);

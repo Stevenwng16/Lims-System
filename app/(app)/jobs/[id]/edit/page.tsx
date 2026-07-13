@@ -26,10 +26,17 @@ export default async function EditJobPage({ params }: { params: Promise<{ id: st
   if (job.voided) redirect(`/jobs/${id}`);
 
   const settings = getOrgSettings(actor.orgId);
-  const labs = (await labApi.listLabs(actor.orgId)).map((lab) => ({ id: lab.id, name: lab.name }));
+  // Org-wide jobs (13 Jul 2026): all active methods are offered, labelled with
+  // the lab that does the work; methods the job already references stay valid.
+  const labNames = new Map(
+    (await labApi.listLabs(actor.orgId)).map((lab) => [lab.id, lab.name] as const),
+  );
   const methods = (await methodApi.listMethods(actor))
     .filter((m) => m.status === "active" || job.samples.some((s) => s.requestedMethodIds.includes(m.id)))
-    .map((m) => ({ id: m.id, label: `${m.name} (${m.code})`, labId: m.labId }));
+    .map((m) => ({
+      id: m.id,
+      label: `${m.name} (${m.code}) · ${labNames.get(m.labId) ?? m.labId}`,
+    }));
   const sampleTypes = settings.sampleTypes
     .filter((t) => t.active || job.samples.some((s) => s.typeId === t.id))
     .map((t) => ({ id: t.id, name: t.name }));
@@ -56,15 +63,12 @@ export default async function EditJobPage({ params }: { params: Promise<{ id: st
       </h1>
       <JobForm
         jobLabel={settings.jobLabel}
-        labs={labs}
         methods={methods}
         sampleTypes={sampleTypes}
-        previews={{}}
         mode="edit"
         jobId={job.id}
         jobNumber={job.id}
         initial={{
-          labId: job.labId,
           customer: job.customer,
           customerRef: job.customerRef,
           receivedAt: job.receivedAt,

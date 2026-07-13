@@ -34,8 +34,9 @@ export type SampleInput = {
   storageLocation: string;
 };
 
+// Jobs are ORGANISATION-wide (13 Jul 2026): no lab on the job — each requested
+// method routes its work to the method's lab; execution stays in lab batches.
 export type JobInput = {
-  labId: string;
   customer: string;
   customerRef: string;
   receivedAt: string;
@@ -50,7 +51,7 @@ export type JobInput = {
 export type JobListItem = {
   id: string;
   customer: string;
-  labName: string;
+  labName: string; // the lab(s) the requested methods route work to
   receivedAt: string;
   sampleCount: number;
   awaitingDecision: number;
@@ -80,8 +81,9 @@ export type JobActionResult =
 
 export interface JobApi {
   listJobs(actor: JobActor): Promise<JobListItem[]>;
-  /** US-C2: overview rows scoped to the active lab (null = org-wide, e.g. a
-   * support session). Derived status + overdue computed server-side. */
+  /** US-C2: overview rows filtered to jobs with work in the active lab
+   * (null = org-wide — a support session or an admin's "All labs" view).
+   * Derived status + overdue computed server-side. */
   jobOverview(actor: JobActor, activeLabId: string | null): Promise<JobOverviewRow[]>;
   getJob(actor: JobActor, jobId: string): Promise<MockJob | null>;
   /** Admin / Lab manager only; generates immutable IDs, validates methods. */

@@ -112,13 +112,15 @@ function SecuritySection({ security }: { security: OrgSettings["security"] }) {
 function IdentifiersSection({
   identifiers,
   jobLabel,
+  previewLabCode,
 }: {
   identifiers: OrgSettings["identifiers"];
   jobLabel: string;
+  previewLabCode: string;
 }) {
   const [state, submit, pending] = useActionState(saveIdentifiersAction, initialState);
   const [formats, setFormats] = useState(identifiers);
-  const preview = previewIds(formats);
+  const preview = previewIds(formats, previewLabCode);
 
   const field = (
     key: "jobFormat" | "sampleFormat" | "batchFormat",
@@ -145,8 +147,10 @@ function IdentifiersSection({
       <CardHeader>
         <CardTitle>Identifiers &amp; labels</CardTitle>
         <CardDescription>
-          Tokens: {"{LAB} {YY} {YYYY} {MM} {SEQ:000}"} — sample numbers may also use {"{JOB}"}.
-          Format changes affect newly generated IDs only; issued IDs are never altered.
+          Tokens: {"{YY} {YYYY} {MM} {SEQ:000}"}; sample numbers use {"{JOB}"} (required) and batch
+          numbers {"{LAB}"} (required — batch sequences run per lab). Jobs are organisation-wide,
+          so {"{LAB}"} is not available for job or sample numbers. Format changes affect newly
+          generated IDs only; issued IDs are never altered.
         </CardDescription>
       </CardHeader>
       <CardContent>
@@ -380,6 +384,7 @@ function LabSettingsSection({ labs }: { labs: LabSettingsRow[] }) {
 export function SettingsClient({
   settings,
   labs,
+  previewLabCode,
 }: {
   settings: Pick<
     OrgSettings,
@@ -392,11 +397,17 @@ export function SettingsClient({
     | "equipment"
   >;
   labs: LabSettingsRow[];
+  /** Real lab code the identifier previews render with (viewer's active lab). */
+  previewLabCode: string;
 }) {
   return (
     <div className="space-y-6">
       <SecuritySection security={settings.security} />
-      <IdentifiersSection identifiers={settings.identifiers} jobLabel={settings.jobLabel} />
+      <IdentifiersSection
+        identifiers={settings.identifiers}
+        jobLabel={settings.jobLabel}
+        previewLabCode={previewLabCode}
+      />
       <ListSection
         list="sampleTypes"
         title="Sample types"

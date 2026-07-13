@@ -77,28 +77,14 @@ export const mockLabApi: LabApi = {
       analystsMayCreateBatches: false,
       reviewerMustDiffer: false,
     });
-    // First-run setup (US-A2 AC 4; 13 Jul 2026 decision replacing the seeded
-    // default lab): the FIRST lab of a setup-pending organisation completes
-    // setup, and its creator — when an org member — is assigned to it. That
-    // assignment must happen HERE: the organisation's only admin can never
-    // assign themself afterwards (US-A6 AC 9 blocks self-service on labs),
-    // so without it the fresh org would have no working lab context at all.
-    // A vendor acting through a support session completes setup without
-    // gaining an assignment (they are not an org member).
+    // The first lab of a setup-pending organisation completes setup (US-A2
+    // AC 4; 13 Jul 2026 decision replacing the seeded default lab). No
+    // creator assignment happens here (supersedes the same-day auto-assign
+    // decision): admins are ORG-WIDE — the shell offers them every active lab
+    // without assignments, so lab creation needs no assignment side effect.
+    // (Only admins can create labs, so the creator is always org-wide.)
     const org = mockDb.organisations.get(orgId);
-    if (org?.setupPending) {
-      org.setupPending = false;
-      const creator = mockDb.users.get(actorEmail);
-      if (creator && creator.orgId === orgId && !creator.labs.includes(name)) {
-        creator.labs.push(name);
-        creator.events.push({
-          id: `uev-${crypto.randomUUID()}`,
-          at: new Date().toISOString(),
-          by: actorEmail,
-          summary: `Assigned to lab "${name}" (first-run setup: creator of the organisation's first lab)`,
-        });
-      }
-    }
+    if (org) org.setupPending = false;
     return { status: "success" };
   },
 

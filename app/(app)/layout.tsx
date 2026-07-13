@@ -2,7 +2,7 @@ import { cookies } from "next/headers";
 import { logoutAction } from "../(auth)/actions";
 import { setActiveLabAction } from "./actions";
 import { resolveOrgContext } from "@/lib/auth/context";
-import { activeLabsForUser, LAB_COOKIE, resolveActiveLab } from "@/lib/lab";
+import { activeLabsForUser, ALL_LABS, LAB_COOKIE, resolveActiveLab } from "@/lib/lab";
 import { ROLE_LABELS } from "@/lib/permissions";
 import { AppSidebar } from "@/components/app-sidebar";
 import { LabSwitcher } from "@/components/lab-switcher";
@@ -22,14 +22,19 @@ export default async function AppShellLayout({ children }: { children: React.Rea
   // Active-lab context for org members (US-A3 AC 4); during a vendor support
   // session, data screens are org-wide by design, so the shell shows an
   // explicit "All labs" chip instead of a switcher (audit finding 16).
-  const assignedLabs = ctx.isSupport ? [] : activeLabsForUser(ctx.labs, ctx.orgId);
+  // Admins are org-wide (13 Jul 2026 decision): their switcher offers every
+  // active lab plus "All labs" (the default) — no assignments involved.
+  const isAdmin = ctx.role === "admin";
+  const switcherLabs = ctx.isSupport ? [] : activeLabsForUser(ctx.labs, ctx.orgId, ctx.role);
   const labCookie = cookieStore.get(LAB_COOKIE)?.value;
-  const activeLab = resolveActiveLab(assignedLabs, labCookie);
+  const activeLab = resolveActiveLab(switcherLabs, labCookie, isAdmin);
   // The cookie points at a lab no longer available (deactivated/unassigned):
   // the fallback must be visible, never silent — working-in-the-wrong-lab is a
   // compliance risk (US-A3 AC 4/10; Fable re-review finding 3). Acknowledging
-  // rewrites the cookie to the fallback via setActiveLabAction.
-  const labWasReset = !ctx.isSupport && !!labCookie && !!activeLab && labCookie !== activeLab.id;
+  // rewrites the cookie to the fallback via setActiveLabAction. Admins fall
+  // back to "All labs", which the switcher itself makes visible.
+  const labWasReset =
+    !ctx.isSupport && !isAdmin && !!labCookie && !!activeLab && labCookie !== activeLab.id;
 
   // AC 8: collapse preference persists — the sidebar writes this cookie.
   const sidebarState = cookieStore.get("sidebar_state")?.value;
@@ -50,8 +55,10 @@ export default async function AppShellLayout({ children }: { children: React.Rea
             <span className="font-medium">{orgLabel}</span>
             {ctx.isSupport ? (
               <span className="text-sm text-muted-foreground">All labs</span>
+            ) : isAdmin ? (
+              <LabSwitcher labs={switcherLabs} activeLabId={activeLab?.id ?? ALL_LABS} allowAll />
             ) : (
-              activeLab && <LabSwitcher labs={assignedLabs} activeLabId={activeLab.id} />
+              activeLab && <LabSwitcher labs={switcherLabs} activeLabId={activeLab.id} />
             )}
           </div>
           <div className="ml-auto flex items-center gap-3">

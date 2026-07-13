@@ -13,7 +13,8 @@ export type LabFormState = { error?: string; success?: boolean };
 async function requireAdminOrgId(): Promise<{ orgId: string; email: string }> {
   const ctx = await resolveOrgContext();
   if (ctx.role !== "admin" || !ctx.orgId) redirect("/");
-  // The email is needed for createLab's first-run setup assignment.
+  // The email is needed for createLab's creator assignment (the creator is
+  // assigned to every lab they create — 13 Jul 2026 amendment).
   return { orgId: ctx.orgId, email: ctx.user.email };
 }
 

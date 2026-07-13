@@ -1,4 +1,7 @@
 import Link from "next/link";
+import { cookies } from "next/headers";
+import { resolveOrgContext } from "@/lib/auth/context";
+import { activeLabsForUser, LAB_COOKIE, resolveActiveLab } from "@/lib/lab";
 import { labApi } from "@/lib/labs";
 import { settingsApi } from "@/lib/settings";
 import {
@@ -22,6 +25,21 @@ export default async function SettingsPage() {
 
   const settings = await settingsApi.getSettings(orgId);
   const labs = (await labApi.listLabs(orgId)).filter((lab) => lab.status === "active");
+
+  // The identifier previews render with a REAL lab code — the viewer's active
+  // lab (as in the shell), falling back to the org's first active lab for
+  // support sessions. "LAB" only when the org has no labs at all.
+  const ctx = await resolveOrgContext();
+  const cookieStore = await cookies();
+  const activeLab = ctx.isSupport
+    ? null
+    : resolveActiveLab(
+        activeLabsForUser(ctx.labs, orgId, ctx.role),
+        cookieStore.get(LAB_COOKIE)?.value,
+        ctx.role === "admin",
+      );
+  const previewLabCode =
+    labs.find((lab) => lab.id === activeLab?.id)?.code ?? labs[0]?.code ?? "LAB";
 
   return (
     <div className="mx-auto max-w-3xl space-y-6">
@@ -63,6 +81,7 @@ export default async function SettingsPage() {
           analystsMayCreateBatches: lab.analystsMayCreateBatches,
           reviewerMustDiffer: lab.reviewerMustDiffer,
         }))}
+        previewLabCode={previewLabCode}
       />
 
       <Card>

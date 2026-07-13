@@ -1,6 +1,7 @@
 import { redirect } from "next/navigation";
 import { resolveOrgContext } from "@/lib/auth/context";
 import { labApi } from "@/lib/labs";
+import { getOrgSettings } from "@/lib/mock-db";
 import { SetupForm } from "./setup-client";
 
 export const metadata = { title: "Set up your organisation" };
@@ -17,7 +18,13 @@ export default async function SetupPage() {
 
   return (
     <div className="mx-auto max-w-3xl py-10">
-      <SetupForm organisationName={ctx.user.organisation} />
+      <SetupForm
+        organisationName={ctx.user.organisation}
+        // The org's REAL batch template (US-A7 AC 3, invariant 7), so the
+        // live example under the code field shows exactly what will be
+        // stamped. Jobs are org-wide — only batch numbers carry the lab code.
+        batchFormat={getOrgSettings(ctx.orgId).identifiers.batchFormat}
+      />
     </div>
   );
 }

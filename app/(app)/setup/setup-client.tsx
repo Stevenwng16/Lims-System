@@ -1,7 +1,8 @@
 "use client";
 
-import { useActionState } from "react";
+import { useActionState, useState } from "react";
 import { PRODUCT_NAME } from "@/lib/branding";
+import { renderTemplate } from "@/lib/settings/format-id";
 import { createFirstLabAction, type SetupFormState } from "./actions";
 import { Alert, AlertDescription } from "@/components/ui/alert";
 import { Button } from "@/components/ui/button";
@@ -14,16 +15,37 @@ const initialState: SetupFormState = {};
 // First-run setup form (13 Jul 2026 decision): asks for the REAL first lab
 // instead of seeding a placeholder — the code becomes part of every job and
 // batch identifier, permanently.
-export function SetupForm({ organisationName }: { organisationName: string }) {
+export function SetupForm({
+  organisationName,
+  batchFormat,
+}: {
+  organisationName: string;
+  batchFormat: string;
+}) {
   const [state, submit, pending] = useActionState(createFirstLabAction, initialState);
+  const [code, setCode] = useState("");
+
+  // Live example under the code field: the org's real batch template (same
+  // client-safe renderer as the Settings preview) with the code as typed, so
+  // the admin sees exactly what their choice will stamp. Jobs are org-wide
+  // (13 Jul 2026) — the lab code appears in BATCH numbers only.
+  const now = new Date();
+  const exampleBatch = renderTemplate(batchFormat, {
+    lab: code.trim().toUpperCase() || "MET",
+    year: now.getFullYear(),
+    month: now.getMonth() + 1,
+    seq: 1,
+  });
 
   return (
     <Card className="mx-auto max-w-xl">
       <CardHeader>
         <CardTitle>Welcome to {PRODUCT_NAME}</CardTitle>
         <CardDescription>
-          {organisationName} has no labs yet. Create your first lab to start working — everything
-          in the system (users, methods, equipment, jobs, batches) is scoped to a lab.
+          {organisationName} has no labs yet. Create your first lab to start working — methods,
+          equipment and batches live in a lab, and colleagues in lab-scoped roles are assigned to
+          one. Jobs are organisation-wide: each requested method routes its work to the method&apos;s
+          lab.
         </CardDescription>
       </CardHeader>
       <CardContent>
@@ -34,10 +56,20 @@ export function SetupForm({ organisationName }: { organisationName: string }) {
           </div>
           <div className="space-y-2">
             <Label htmlFor="setup-code">Short code (2–8 characters)</Label>
-            <Input id="setup-code" name="code" placeholder="e.g. MET" className="w-32 font-mono uppercase" maxLength={8} required />
+            <Input
+              id="setup-code"
+              name="code"
+              placeholder="e.g. MET"
+              className="w-32 font-mono uppercase"
+              maxLength={8}
+              required
+              value={code}
+              onChange={(e) => setCode(e.target.value.toUpperCase())}
+            />
             <p className="text-xs text-muted-foreground">
-              The code is stamped into every job and batch number (e.g. MET26-00001) and issued
-              identifiers are never rewritten — choose the code you want in your records.
+              The code is stamped into every batch number of this lab (e.g.{" "}
+              <span className="font-mono">{exampleBatch}</span>) and issued identifiers are never
+              rewritten — choose the code you want in your records.
             </p>
           </div>
           <div className="space-y-2">
@@ -53,8 +85,9 @@ export function SetupForm({ organisationName }: { organisationName: string }) {
             {pending ? "Creating…" : "Create lab & start"}
           </Button>
           <p className="text-xs text-muted-foreground">
-            You will be assigned to this lab as its first member. Afterwards: add colleagues under
-            Admin ▸ Users, more labs under Admin ▸ Labs, and methods under Methods.
+            As an admin you have access to all labs of your organisation. Afterwards: add sample
+            types under Admin ▸ Settings, colleagues under Admin ▸ Users, more labs under
+            Admin ▸ Labs, and methods under Methods.
           </p>
         </form>
       </CardContent>

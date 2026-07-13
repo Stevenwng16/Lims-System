@@ -29,7 +29,6 @@ function parseJobInput(formData: FormData): JobInput | { parseError: string } {
   try {
     const samples = JSON.parse(String(formData.get("samplesJson") ?? "[]")) as SampleInput[];
     return {
-      labId: String(formData.get("labId") ?? ""),
       customer: String(formData.get("customer") ?? ""),
       customerRef: String(formData.get("customerRef") ?? ""),
       receivedAt: String(formData.get("receivedAt") ?? ""),

@@ -147,7 +147,9 @@ export const mockUserApi: UserApi = {
     const error =
       validateInput(input) ?? labManagerViolation(actor, input) ?? labViolation(actor, input);
     if (error) return { status: "error", message: error };
-    if (input.labs.length === 0) {
+    // Admins are org-wide (13 Jul 2026 decision) — they need no lab
+    // assignment; every lab-scoped role does.
+    if (input.role !== "admin" && input.labs.length === 0) {
       return { status: "error", message: "Assign the user to at least one lab." };
     }
 
@@ -243,7 +245,8 @@ export const mockUserApi: UserApi = {
     const labScope = assignableLabNames(actor);
     const keptLabs = target.labs.filter((lab) => !labScope.has(lab));
     const mergedLabs = [...new Set([...input.labs, ...keptLabs])];
-    if (mergedLabs.length === 0) {
+    // Org-wide admins need no lab assignment (13 Jul 2026 decision).
+    if (input.role !== "admin" && mergedLabs.length === 0) {
       return { status: "error", message: "Assign the user to at least one lab." };
     }
 

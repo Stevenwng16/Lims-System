@@ -21,25 +21,26 @@ export default async function NewJobPage() {
   if (actor.role !== "admin" && actor.role !== "lab-manager") redirect("/jobs");
 
   const settings = getOrgSettings(actor.orgId);
-  const labs = (await labApi.listLabs(actor.orgId))
-    .filter((lab) => lab.status === "active")
-    .filter((lab) => actor.role === "admin" || actor.isSupport || actor.labs.includes(lab.name))
-    .map((lab) => ({ id: lab.id, name: lab.name }));
 
-  // Active methods with their lab, so the client can offer only the selected
-  // lab's methods (AC 14).
+  // Jobs are org-wide (13 Jul 2026): EVERY active method of the organisation
+  // can be requested — the method's lab (shown in the label) routes the work.
+  const labNames = new Map(
+    (await labApi.listLabs(actor.orgId)).map((lab) => [lab.id, lab.name] as const),
+  );
   const methods = (await methodApi.listMethods(actor))
     .filter((m) => m.status === "active")
-    .map((m) => ({ id: m.id, label: `${m.name} (${m.code})`, labId: m.labId }));
+    .map((m) => ({
+      id: m.id,
+      label: `${m.name} (${m.code}) · ${labNames.get(m.labId) ?? m.labId}`,
+    }));
 
   const sampleTypes = settings.sampleTypes
     .filter((t) => t.active)
     .map((t) => ({ id: t.id, name: t.name }));
 
-  // Example next number per lab (peek — does not consume the sequence). The
-  // real, immutable number is assigned on registration.
-  const previews: Record<string, string> = {};
-  for (const lab of labs) previews[lab.id] = peekJobNumber(actor.orgId, lab.id, "") ?? "";
+  // Example next number (peek — does not consume the sequence). The real,
+  // immutable number is assigned on registration.
+  const preview = peekJobNumber(actor.orgId, "");
 
   return (
     <div className="mx-auto max-w-3xl space-y-6">
@@ -59,10 +60,9 @@ export default async function NewJobPage() {
       </h1>
       <JobForm
         jobLabel={settings.jobLabel}
-        labs={labs}
         methods={methods}
         sampleTypes={sampleTypes}
-        previews={previews}
+        preview={preview}
       />
     </div>
   );

@@ -123,17 +123,19 @@ export function defaultOrgSettings(): OrgSettings {
       requireMfa: false,
     },
     identifiers: {
-      jobFormat: "{LAB}{YY}-{SEQ:00000}",
+      // Org-wide job numbers (13 Jul 2026): no {LAB} in job/sample formats —
+      // only batch numbers carry the lab code.
+      jobFormat: "J{YY}-{SEQ:00000}",
       sampleFormat: "{JOB}.{SEQ:000}",
       batchFormat: "{LAB}B{YY}-{SEQ:0000}",
       sequenceReset: "yearly",
     },
     jobLabel: "Job",
-    sampleTypes: [
-      { id: "st-1", name: "Water", active: true },
-      { id: "st-2", name: "Soil", active: true },
-      { id: "st-3", name: "Sludge", active: true },
-    ],
+    // Sample types start EMPTY (13 Jul 2026 decision): what a lab tests is
+    // org-specific taxonomy — pre-filled guesses would leak into accredited
+    // records. The admin defines them under Admin ▸ Settings before the
+    // first job. (The demo seed sets its own list explicitly below.)
+    sampleTypes: [],
     resultQualifiers: [{ id: "rq-1", name: "n.b.", active: true }],
     barcode: {
       symbology: "code128",
@@ -310,10 +312,13 @@ export type MockJobEvent = {
   summary: string; // "field: old → new" on edits; reasons on voids
 };
 
+// A job is ORGANISATION-wide (13 Jul 2026 decision): one customer order = one
+// number, even when several labs do the work. It carries NO lab — the lab
+// context of the WORK derives from each requested method (methods are
+// lab-scoped masterdata) and execution stays in lab-scoped batches.
 export type MockJob = {
   id: string; // the job number (AC 2) — immutable
   orgId: string;
-  labId: string;
   customer: string;
   customerRef: string;
   receivedAt: string; // date + time of receipt (AC 1)
@@ -780,9 +785,11 @@ export type MockDb = {
   // Generated working-copy bytes (ADR-3 mock), keyed "<orgId>:<batchNumber>".
   // Kept out of the batch record so RSC serialization never ships file bytes.
   batchFiles: Map<string, Uint8Array>;
-  // Per-org+per-lab+period job counters and per-job sample counters (US-A7 AC 3
-  // sequence isolation). Key formats: "job:<orgId>:<labId>:<period>" and
-  // "sample:<orgId>:<jobNumber>". Both org-scoped so tenants never couple.
+  // Job counters run per org+period (org-wide jobs, 13 Jul 2026), batch
+  // counters per org+lab+period, sample counters per job (US-A7 AC 3 sequence
+  // isolation). Key formats: "job:<orgId>:<period>",
+  // "batch:<orgId>:<labId>:<period>" and "sample:<orgId>:<jobNumber>". All
+  // org-scoped so tenants never couple.
   sequences: Map<string, number>;
 };
 
@@ -982,6 +989,13 @@ function seedDb(): MockDb {
   for (const orgId of organisations.keys()) {
     orgSettings.set(orgId, defaultOrgSettings());
   }
+  // The demo org's sample types are seed DATA (fresh orgs start with an empty
+  // list, 13 Jul 2026 decision) — seed jobs reference st-1/st-2.
+  orgSettings.get("org-demolab")!.sampleTypes = [
+    { id: "st-1", name: "Water", active: true },
+    { id: "st-2", name: "Soil", active: true },
+    { id: "st-3", name: "Sludge", active: true },
+  ];
 
   // Seed methods (US-B1). Seed checksums are placeholders — templates uploaded
   // through the UI get a real SHA-256 computed from the bytes.
@@ -1529,10 +1543,11 @@ function seedDb(): MockDb {
   });
   // Map key is org-composite for tenant isolation (audit findings 1/8/12); the
   // visible id stays the human-readable, org-unique job number.
+  // Seed job numbers keep their historical MET-prefixed format: issued IDs
+  // are never rewritten — the org-wide "J{YY}-…" format applies to NEW jobs.
   jobs.set("org-demolab:MET26-00001", {
     id: "MET26-00001",
     orgId: "org-demolab",
-    labId: "lab-met",
     customer: "Aqualab Noord",
     customerRef: "PO-7781",
     receivedAt: "2026-06-09T14:20",
@@ -1579,7 +1594,6 @@ function seedDb(): MockDb {
   ): MockJob => ({
     id,
     orgId: "org-demolab",
-    labId: "lab-met",
     customer,
     customerRef: "",
     receivedAt: "2026-06-20T09:00",
@@ -1827,7 +1841,7 @@ function seedDb(): MockDb {
   });
 
   // Counters consistent with the seed (5 Metals jobs in 2026; sample seq per job).
-  sequences.set("job:org-demolab:lab-met:2026", 5);
+  sequences.set("job:org-demolab:2026", 5); // org-wide job sequence (13 Jul 2026)
   sequences.set("batch:org-demolab:lab-met:2026", 2);
   sequences.set("sample:org-demolab:MET26-00001", 3);
   sequences.set("sample:org-demolab:MET26-00002", 1);
@@ -1910,15 +1924,15 @@ function cleanDb(): MockDb {
   };
 }
 
-// V25: platformAudit — the platform-level audit log of US-A2 AC 3 (org
-// provisioning + status changes, attributed). (V24: pass-4 review — per-job
-// and per-user audit event lists (US-C3 AC 5 / US-A6 AC 12), seed batch
-// METB26-0001 gains its Zn expectation line and its four result-validity
-// events.) The cache key carries the seed MODE so flipping LIMS_CLEAN_SEED
-// can never serve the other mode's store.
+// V27: fresh orgs start with EMPTY sample types (13 Jul 2026) — the demo org
+// seeds its own list. (V26: org-wide jobs — MockJob loses labId, job
+// sequences run per org+period, default jobFormat "J{YY}-{SEQ:00000}"; V25:
+// platformAudit — the platform-level audit log of US-A2 AC 3.) The cache key
+// carries the seed MODE so flipping LIMS_CLEAN_SEED can never serve the
+// other mode's store.
 const CLEAN_SEED = process.env.LIMS_CLEAN_SEED === "1";
 export const mockDb: MockDb = ((globalThis as Record<string, unknown>)[
-  CLEAN_SEED ? "__limsMockDbV25Clean" : "__limsMockDbV25"
+  CLEAN_SEED ? "__limsMockDbV27Clean" : "__limsMockDbV27"
 ] ??= CLEAN_SEED ? cleanDb() : seedDb()) as MockDb;
 
 export function getOrgSettings(orgId: string): OrgSettings {

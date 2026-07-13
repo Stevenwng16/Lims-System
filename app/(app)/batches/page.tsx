@@ -22,9 +22,15 @@ export default async function BatchesPage() {
   const cookieStore = await cookies();
   const activeLab = actor.isSupport
     ? null
-    : resolveActiveLab(activeLabsForUser(actor.labs, actor.orgId), cookieStore.get(LAB_COOKIE)?.value);
+    : resolveActiveLab(
+        activeLabsForUser(actor.labs, actor.orgId, actor.role),
+        cookieStore.get(LAB_COOKIE)?.value,
+        actor.role === "admin",
+      );
 
-  const rows = await batchApi.listBatches(actor, actor.isSupport ? null : (activeLab?.id ?? null));
+  // activeLab null = org-wide (support session, or an admin's "All labs" view
+  // — 13 Jul 2026 decision).
+  const rows = await batchApi.listBatches(actor, activeLab?.id ?? null);
   // US-D2 AC 4: step filter over the lab's active methods' step names.
   const stepOptions = activeLab ? stepNameOptionsForLab(actor.orgId, activeLab.id) : [];
 
@@ -55,7 +61,9 @@ export default async function BatchesPage() {
               ? "All labs (support session)"
               : activeLab
                 ? `${activeLab.name} lab`
-                : "No active lab"}
+                : actor.role === "admin"
+                  ? "All labs — pick a lab in the header to create batches"
+                  : "No active lab"}
           </p>
         </div>
         <div className="flex gap-2">
