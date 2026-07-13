@@ -64,6 +64,55 @@ const DECIMAL_PATTERN = /^\d+(\.\d+)?$/;
 const SAMPLE_TYPE_IDS = (orgId: string) =>
   new Set(getOrgSettings(orgId).sampleTypes.filter((t) => t.active).map((t) => t.id));
 
+/** The deadline must be empty or a real yyyy-mm-dd date, enforced SERVER-side
+ * (pass-4 review fix): only the client date control guaranteed the format, and
+ * the D2 batch queue compares this string lexicographically for its sort and
+ * ⚠ overdue flag — a non-ISO value mis-sorted and mis-flagged there while the
+ * job overview (which parses via Date) disagreed about the same deadline. */
+function dueDateError(raw: string): string | null {
+  const due = raw.trim();
+  if (!due) return null; // no deadline is allowed
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(due)) {
+    return "The deadline must be a calendar date in yyyy-mm-dd form.";
+  }
+  // Round-trip through Date: JS silently rolls an impossible day over into
+  // the next month ("2026-02-31" → 3 Mar), so parse success alone proves
+  // nothing — the components must survive unchanged.
+  const [y, m, d] = due.split("-").map(Number);
+  const date = new Date(Date.UTC(y, m - 1, d));
+  if (date.getUTCFullYear() !== y || date.getUTCMonth() !== m - 1 || date.getUTCDate() !== d) {
+    return "The deadline must be a real calendar date (yyyy-mm-dd).";
+  }
+  return null;
+}
+
+/** Append one audit event to the job (US-C3 AC 5 / invariant 1 — pass-4
+ * review fix: job edits previously left NO trace anywhere; the History tab
+ * reconstructed "illustrative" lines from current state, so before-values
+ * were unrecoverable and a stale save could silently revert a colleague's
+ * changes). Same append-only convention as batches/equipment/configs. */
+function addJobEvent(job: MockJob, actorEmail: string, summary: string): void {
+  job.events.push({
+    id: `jev-${crypto.randomUUID()}`,
+    at: new Date().toISOString(),
+    by: actorEmail,
+    summary,
+  });
+}
+
+/** Method ids rendered as their codes where resolvable — diff summaries stay
+ * readable without hauling version labels around. */
+function methodCodes(orgId: string, ids: string[]): string {
+  return (
+    ids
+      .map((id) => {
+        const method = mockDb.methods.get(id);
+        return method && method.orgId === orgId ? currentMethodVersion(method).code : id;
+      })
+      .join(", ") || "none"
+  );
+}
+
 // Per-sample rules (AC 14) against the job's lab — shared by create, update
 // and add (US-C3 AC 7), so a single new sample is never gated on stale
 // whole-job header state (audit findings 2/4). `grandfather` carries an
@@ -104,6 +153,8 @@ function validate(actor: JobActor, input: JobInput, existing?: MockJob): string 
   }
   if (!input.customer.trim()) return "The customer name is required.";
   if (!input.receivedAt.trim()) return "The date and time of receipt are required.";
+  const dueError = dueDateError(input.dueDate);
+  if (dueError) return dueError;
   if (input.samples.length < 1) return "A job needs at least one sample.";
 
   const activeMethods = activeMethodIdsForLab(actor.orgId, input.labId);
@@ -313,7 +364,14 @@ export const mockJobApi: JobApi = {
       createdAt: now,
       createdBy: actor.email,
       samples: input.samples.map((s) => buildSample(actor.orgId, input.labId, jobNumber, input.receivedAt, s)),
+      events: [],
     });
+    const created = mockDb.jobs.get(jobKey(actor.orgId, jobNumber))!;
+    addJobEvent(
+      created,
+      actor.email,
+      `Job created: ${created.samples.length} sample(s) (${created.samples.map((s) => s.id).join(", ")})`,
+    );
     return { status: "success", jobId: jobNumber };
   },
 
@@ -329,6 +387,8 @@ export const mockJobApi: JobApi = {
     if (!input.receivedAt.trim()) {
       return { status: "error", message: "The date and time of receipt are required." };
     }
+    const dueError = dueDateError(input.dueDate);
+    if (dueError) return { status: "error", message: dueError }; // pass-4 fix (see dueDateError)
     const activeMethods = activeMethodIdsForLab(actor.orgId, job.labId);
     for (const id of input.requestedMethodIds) {
       if (!activeMethods.has(id) && !job.requestedMethodIds.includes(id)) {
@@ -373,10 +433,51 @@ export const mockJobApi: JobApi = {
       }
     }
 
-    // All checks passed — apply. AC 12: the job number and existing sample IDs
-    // never change. An edit can NEVER remove a sample (removal is a void with a
-    // reason, US-C3 AC 8): existing samples not present in the submission are
-    // retained untouched (never-delete — Fable re-review findings 5/11/19).
+    // All checks passed — record the before → after diff FIRST (US-C3 AC 5 /
+    // invariant 1 — pass-4 review fix: without this, an edit's before-values
+    // were unrecoverable and a stale save silently reverted a colleague's
+    // changes with no trace), then apply. AC 12: the job number and existing
+    // sample IDs never change. An edit can NEVER remove a sample (removal is a
+    // void with a reason, US-C3 AC 8): existing samples not present in the
+    // submission are retained untouched (never-delete).
+    const changes: string[] = [];
+    const diff = (label: string, before: string, after: string) => {
+      if (before !== after) changes.push(`${label}: "${before}" → "${after}"`);
+    };
+    diff("customer", job.customer, input.customer.trim());
+    diff("customer ref", job.customerRef, input.customerRef.trim());
+    diff("received at", job.receivedAt, input.receivedAt);
+    diff("priority", job.priority, input.priority.trim());
+    diff("deadline", job.dueDate, input.dueDate.trim());
+    diff("notes", job.notes, input.notes.trim());
+    diff("storage location", job.storageLocation, input.storageLocation.trim());
+    diff(
+      "requested methods",
+      methodCodes(actor.orgId, job.requestedMethodIds),
+      methodCodes(actor.orgId, input.requestedMethodIds),
+    );
+    for (const s of input.samples) {
+      if (!s.id) continue;
+      const existing = byId.get(s.id)!;
+      if (existing.voided) continue;
+      const sampleChanges: string[] = [];
+      const sdiff = (label: string, before: string, after: string) => {
+        if (before !== after) sampleChanges.push(`${label}: "${before}" → "${after}"`);
+      };
+      sdiff("type", existing.typeId, s.typeId);
+      sdiff("description", existing.description, s.description.trim());
+      sdiff("customer ref", existing.customerSampleRef, s.customerSampleRef.trim());
+      sdiff("quantity", `${existing.quantity} ${existing.quantityUnit}`.trim(), `${s.quantity.trim()} ${s.quantityUnit.trim()}`.trim());
+      sdiff(
+        "methods",
+        methodCodes(actor.orgId, existing.requestedMethodIds),
+        methodCodes(actor.orgId, s.requestedMethodIds),
+      );
+      sdiff("condition", existing.condition, s.condition);
+      sdiff("storage", existing.storageLocation, s.storageLocation.trim());
+      if (sampleChanges.length > 0) changes.push(`sample ${s.id}: ${sampleChanges.join(", ")}`);
+    }
+
     job.customer = input.customer.trim();
     job.customerRef = input.customerRef.trim();
     job.receivedAt = input.receivedAt;
@@ -391,9 +492,12 @@ export const mockJobApi: JobApi = {
         const existing = byId.get(s.id)!;
         if (!existing.voided) applySampleEdits(existing, s);
       } else {
-        job.samples.push(buildSample(actor.orgId, job.labId, job.id, job.receivedAt, s));
+        const added = buildSample(actor.orgId, job.labId, job.id, job.receivedAt, s);
+        job.samples.push(added);
+        changes.push(`sample ${added.id} added (${added.description})`);
       }
     }
+    if (changes.length > 0) addJobEvent(job, actor.email, `Job edited: ${changes.join("; ")}`);
     return { status: "success", jobId };
   },
 
@@ -433,8 +537,15 @@ export const mockJobApi: JobApi = {
       };
     }
 
+    // Before → after audit line (US-C3 AC 5 / §7.4.3 — pass-4 review fix).
+    const before = sample.acceptance ?? "awaiting decision";
     sample.acceptance = acceptance;
     sample.reservationReason = acceptance === "accepted-with-reservation" ? reason.trim() : "";
+    addJobEvent(
+      loaded.job,
+      actor.email,
+      `Sample ${sampleId}: acceptance ${before} → ${acceptance}${sample.reservationReason ? ` — ${sample.reservationReason}` : ""}`,
+    );
     // AC 9: nothing else to write — the lifecycle status ("received" from the
     // moment of acceptance) is DERIVED from the acceptance decision and batch
     // membership (US-D1 decision 3 Jul 2026).
@@ -456,6 +567,12 @@ export const mockJobApi: JobApi = {
       recordedBy: actor.email,
       recordedAt: new Date().toLocaleDateString("en-GB", { day: "numeric", month: "short", year: "numeric" }),
     };
+    // §7.4.3 consultation is a domain action → audit line (pass-4 fix).
+    addJobEvent(
+      loaded.job,
+      actor.email,
+      `Customer consultation recorded for ${sampleId} (${sample.consultation.who}): ${sample.consultation.outcome}`,
+    );
     return { status: "success", jobId };
   },
 
@@ -468,7 +585,9 @@ export const mockJobApi: JobApi = {
     // registration (audit findings 2/4).
     const error = validateSample(actor.orgId, job.labId, input);
     if (error) return { status: "error", message: error };
-    job.samples.push(buildSample(actor.orgId, job.labId, job.id, job.receivedAt, input));
+    const added = buildSample(actor.orgId, job.labId, job.id, job.receivedAt, input);
+    job.samples.push(added);
+    addJobEvent(job, actor.email, `Sample ${added.id} added (${added.description})`); // pass-4 fix
     return { status: "success", jobId };
   },
 
@@ -482,14 +601,20 @@ export const mockJobApi: JobApi = {
       return { status: "error", message: "Attachments are limited to 5 MB in the mock." };
     }
     // ADR-3: immutable file + SHA-256 checksum over the actual bytes.
+    const sha256 = createHash("sha256").update(file.bytes).digest("hex");
     sample.attachments.push({
       id: `att-${sample.attachments.length + 1}-${sample.id}`,
       fileName: file.fileName,
       sizeBytes: file.bytes.length,
-      sha256: createHash("sha256").update(file.bytes).digest("hex"),
+      sha256,
       uploadedAt: new Date().toLocaleDateString("en-GB", { day: "numeric", month: "short", year: "numeric" }),
       uploadedBy: actor.email,
     });
+    addJobEvent(
+      loaded.job,
+      actor.email,
+      `Evidence added to ${sampleId}: ${file.fileName} (sha256 ${sha256.slice(0, 16)}…)`,
+    ); // pass-4 fix
     return { status: "success", jobId };
   },
 
@@ -504,6 +629,7 @@ export const mockJobApi: JobApi = {
     // Void, never delete (AC 13) — the record and its IDs are retained.
     job.voided = true;
     job.voidReason = reason.trim();
+    addJobEvent(job, actor.email, `Job voided — ${job.voidReason}`); // pass-4 fix
     return { status: "success", jobId };
   },
 
@@ -522,6 +648,7 @@ export const mockJobApi: JobApi = {
     }
     sample.voided = true;
     sample.voidReason = reason.trim();
+    addJobEvent(job, actor.email, `Sample ${sampleId} voided — ${sample.voidReason}`); // pass-4 fix
     return { status: "success", jobId };
   },
 };

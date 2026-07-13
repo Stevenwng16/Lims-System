@@ -235,6 +235,10 @@ export function BatchQueue({
               <TableHead className="text-right">Pos.</TableHead>
               <TableHead>Assignee</TableHead>
               <TableHead>Due</TableHead>
+              {/* AC 1 names the creation date among the list columns —
+                  it was delivered by the server but never rendered
+                  (pass-4 review fix). */}
+              <TableHead>Created</TableHead>
               <TableHead />
             </TableRow>
           </TableHeader>
@@ -274,10 +278,23 @@ export function BatchQueue({
                       me
                     </Badge>
                   )}
+                  {/* Server-computed live signal (pass-4 fix): the assignee
+                      can no longer act — without this the batch reads as
+                      covered while it silently stalls. */}
+                  {row.assignee && !row.assigneeCanAct && (
+                    <Badge
+                      variant="destructive"
+                      className="ml-1"
+                      title="This user can no longer work on this batch (deactivated, moved lab, or clearance revoked) — a manager can reassign or unassign."
+                    >
+                      unavailable
+                    </Badge>
+                  )}
                 </TableCell>
                 <TableCell className={`text-sm ${row.overdue ? "font-medium text-amber-700 dark:text-amber-400" : ""}`}>
                   {row.deadline ?? "—"}
                 </TableCell>
+                <TableCell className="text-sm text-muted-foreground">{row.createdAt.slice(0, 10)}</TableCell>
                 <TableCell className="text-right">
                   {row.canClaim && <ClaimButton batchId={row.id} />}
                 </TableCell>
@@ -285,7 +302,7 @@ export function BatchQueue({
             ))}
             {visible.length === 0 && (
               <TableRow>
-                <TableCell colSpan={7} className="text-center text-muted-foreground">
+                <TableCell colSpan={8} className="text-center text-muted-foreground">
                   {rows.length === 0 ? "No batches in this lab yet." : "No batches match the current filters."}
                 </TableCell>
               </TableRow>

@@ -519,6 +519,18 @@ function AssignDialog({
         <form action={submit} className="space-y-4">
           <input type="hidden" name="batchId" value={detail.record.id} />
           <input type="hidden" name="assignee" value={assignee} />
+          {/* The current assignee is absent from assignableUsers when they can
+              no longer act — say so instead of rendering a blank selection
+              (pass-4 fix). */}
+          {detail.assignee && !detail.assigneeCanAct && (
+            <Alert>
+              <AlertDescription>
+                The current assignee ({detail.assigneeName ?? detail.assignee}) can no longer work
+                on this batch (deactivated, moved lab, or clearance revoked) — choose a new
+                assignee or return it to the open pool.
+              </AlertDescription>
+            </Alert>
+          )}
           <div className="space-y-2">
             <Label>Assignee</Label>
             <Select value={assignee || "none"} onValueChange={(v) => v && setAssignee(v === "none" ? "" : v)}>
@@ -625,8 +637,6 @@ export function BatchDetailClient({
   const close = () => setDialog(null);
   const batch = detail.record;
   const eventsDesc = [...detail.events].sort((a, b) => b.at.localeCompare(a.at));
-  const today = new Date().toISOString().slice(0, 10);
-  const deadlineNear = detail.deadline !== null && detail.deadline <= today;
   const currentStep = detail.steps.find((s) => s.state === "current") ?? null;
   // US-D2 AC 7: assigned to someone ELSE — warn, never block.
   const assignedToOther = detail.assignee !== null && detail.assignee !== actorEmail;
@@ -664,13 +674,26 @@ export function BatchDetailClient({
             created {fmt(batch.createdAt)} by {batch.createdBy}
           </span>
           <span>·</span>
-          <span className={deadlineNear ? "font-medium text-amber-700 dark:text-amber-400" : ""}>
-            {detail.deadline ? `due ${detail.deadline} ${deadlineNear ? "⚠" : ""}` : "no deadline"}
+          {/* The SERVER-computed AC 2 flag — one rule with the list (pass-4
+              fix: a local recomputation flagged due-today and even completed
+              batches, disagreeing with the queue about the same batch). */}
+          <span className={detail.overdue ? "font-medium text-amber-700 dark:text-amber-400" : ""}>
+            {detail.deadline ? `due ${detail.deadline} ${detail.overdue ? "⚠" : ""}` : "no deadline"}
           </span>
           <span>·</span>
           <span>
             Assignee: {detail.assigneeName ?? "— (open pool)"}
             {detail.assignee === actorEmail && " (you)"}
+            {/* Live server signal (pass-4 fix) — see BatchListRow. */}
+            {detail.assignee && !detail.assigneeCanAct && (
+              <Badge
+                variant="destructive"
+                className="ml-1"
+                title="This user can no longer work on this batch (deactivated, moved lab, or clearance revoked) — reassign or unassign."
+              >
+                unavailable
+              </Badge>
+            )}
           </span>
           <ClaimReleaseButtons detail={detail} actorEmail={actorEmail} canWork={canWork} />
           {canManage && (batch.status === "open" || batch.status === "awaiting-review") && (

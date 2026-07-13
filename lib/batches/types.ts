@@ -5,6 +5,7 @@ import type {
   MockBatchEvent,
   MockImportConfig,
   MockMeasurementRecord,
+  ResultValue,
   SampleAcceptance,
 } from "@/lib/mock-db";
 import type { OrgRole } from "@/lib/permissions";
@@ -81,6 +82,10 @@ export type BatchListRow = {
   overdue: boolean; // US-D2 AC 2: deadline passed & batch not finished — a flag, never a status
   assignee: string | null; // US-D2: email, or null = open pool
   assigneeName: string | null;
+  /** LIVE check (pass-4 fix): false = the assignee can no longer act on this
+   * batch (deactivated / moved lab / de-cleared) — badge, don't present as
+   * covered. Always true when unassigned. */
+  assigneeCanAct: boolean;
   canClaim: boolean; // US-D2 AC 6: unassigned + THIS actor may work on it
   mine: boolean; // assigned to the requesting actor
   sampleCount: number;
@@ -157,9 +162,14 @@ export type BatchDetail = {
   // --- US-D2 ---
   assignee: string | null;
   assigneeName: string | null;
+  /** LIVE check (pass-4 fix) — see BatchListRow.assigneeCanAct. */
+  assigneeCanAct: boolean;
   // --- US-D3 ---
   statusLabel: string; // AC 8, derived: "At step 2 of 5 — Digestion" / …
   deadline: string | null; // AC 9: earliest job deadline among the samples
+  /** US-D2 AC 2 flag computed server-side with the ONE rule (pass-4 fix —
+   * the detail header used to recompute a drifted variant locally). */
+  overdue: boolean;
   steps: StepRailEntry[]; // AC 3: the rail, derived from state + event log
   worksheets: Attachment[]; // AC 5 gate / US-D4 AC 9 versions (last = current)
   events: MockBatchEvent[]; // AC 2: History IS the event log (pure view)
@@ -212,7 +222,11 @@ export type BulkPreviewCell = {
   analyteId: string;
   raw: string;
   outcome:
-    | { kind: "accepted"; display: string }
+    // `value` is the VALIDATED result the verdict stands for (pass-4 review
+    // fix): the staged preview→confirm equality check must catch a same-
+    // display kind flip (numeric "12" vs a qualifier named "12"), and the
+    // confirm writes exactly this value, never a live re-derivation.
+    | { kind: "accepted"; display: string; value: ResultValue }
     | { kind: "rejected"; message: string }
     | { kind: "occupied" }; // never silently superseded (decision 4 Jul 2026)
 };
@@ -239,6 +253,10 @@ export type ImportRowMatch =
   | { kind: "sample"; id: string }
   | { kind: "qc"; materialId: string; code: string }
   | { kind: "out-of-batch"; sampleId: string } // exists elsewhere — only skippable
+  // Two batch QC entries share this code (legal via grandfathering): the row
+  // must be explicitly mapped to the intended entry or skipped — auto-picking
+  // one would be a silent wrong-target write (pass-4 review fix).
+  | { kind: "ambiguous-qc"; code: string }
   | { kind: "unknown" }; // must be mapped or skipped with a reason (AC 4)
 
 export type ImportCellVerdict =

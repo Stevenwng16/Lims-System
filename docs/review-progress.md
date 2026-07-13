@@ -39,15 +39,16 @@ security/auth/secrets discussion tends to get the turn routed off Fable. To avoi
 **Already reviewed** (adversarial multi-agent audit done, findings fixed):
 Epic A (US-A1–A7) · US-B1 · US-C1–C4 · US-B2 · **Pass 2: US-B3 · US-D1 · US-D3 (6 Jul 2026 —
 18 findings confirmed, 14 fixed, 4 held as decisions for Ramazan, see below)** · **Pass 3:
-US-D4 · US-D5 · US-D6 (10 Jul 2026 — 38 findings confirmed, 30 fixed, 8 held as decisions for
-Ramazan, see below; changes in `docs/review-changes.md`)**.
+US-D4 · US-D5 · US-D6 (10 Jul 2026 — 38 findings confirmed, 30 fixed, 8 held)** · **Pass 4:
+US-D2 + consistency sweep over the pass-2/3 fix areas (13 Jul 2026 — 15 findings confirmed
+unanimously, 13 fixed, 2 held as decisions for Ramazan, see below; changes in
+`docs/review-changes.md`)**.
 
 **Pending:**
 
 | Pass | Scope | How |
 |---|---|---|
-| 4 | US-D2 work queue · cross-cutting consistency sweep over everything the fixes touched | workflow |
-| Re-verify | regression sweep over all previously reviewed areas (Epic A · B1 · B2 · C1–C4 · pass-2/3 scope) | workflow |
+| Re-verify | regression sweep over all previously reviewed areas (Epic A · B1 · B2 · C1–C4 · pass-2/3/4 scope) | workflow |
 | Backend | Steven's Supabase auth layer (see file list below) | **inline, not a workflow** |
 
 ## Pass-2 open decisions (Ramazan — options + recommendation, not yet built)
@@ -138,7 +139,36 @@ Ramazan, see below; changes in `docs/review-changes.md`)**.
 
 Observation for Ramazan (not a finding): the repo still has **no persistent test suite** — every
 story's DoD lists tests, and the review passes verify behavior via throwaway scratch harnesses.
-Worth deciding where the 81 pass-3 checks (and pass-2's 52) should permanently live.
+Worth deciding where the checks should permanently live (the suite now counts 121: pass-3's 81
+re-run each pass + 40 pass-4 checks; pass-2's 52 were a separate harness).
+
+## Pass-4 open decisions (Ramazan — options + recommendation, not yet built)
+
+1. **The step filter cannot express steps of older pinned versions or deactivated methods**
+   (medium). The dropdown is built from CURRENT versions of ACTIVE methods, but each row's step
+   name comes from the batch's PINNED version — renaming a step (new version) or deactivating a
+   method makes its open batches invisible to every step view ("what is waiting at Digestion"
+   silently misses real waiting work). Options: (a) union the dropdown with the distinct current-
+   step names of the actually listed open batches — **recommended**, the filter then always
+   covers what the list shows; (b) include all versions of methods with open batches; (c) log
+   the current behavior as accepted (the "Later" step-taxonomy note is adjacent but does not
+   cover version pinning).
+2. **Assignee=Unassigned always excludes finished batches** (low). Status=Completed +
+   Unassigned is a guaranteed-empty result even when completed never-assigned batches exist —
+   while "Mine" DOES match finished rows. Options: (a) drop the active-only requirement from
+   the row predicate (keep it in the AC 5 pool count) — **recommended**, symmetric with Mine;
+   (b) rename the option "Unassigned (open pool)" and keep the semantics.
+3. *(sub-question from the pass-4 G1 fix)* **Should the composition edit that CREATES a QC-code
+   collision be blocked?** Imports/worksheets now handle the collision loudly, but the working
+   copy still prints the same ID cell for both entries' rows. Options: (a) block adding a
+   material whose code collides with a held entry (the grandfathered entry can be removed
+   first) — **recommended**, removes the ambiguity at the source; (b) keep it legal and rely on
+   the loud matchers.
+4. *(sub-question from the pass-4 G3 fix)* **Should a batch whose assignee can no longer act
+   auto-return to the open pool (or become claimable)?** It is now BADGED everywhere, but only
+   a manager reassign/unassign frees it. Options: (a) keep manager-only recovery —
+   **recommended** (assignment changes stay deliberate, audited acts); (b) make such batches
+   claimable; (c) auto-unassign with an audit event when the flag flips.
 
 ## Pass file-scopes
 
@@ -182,12 +212,28 @@ the seed script, and the committed `.env.local`.
 ## Test-harness note
 
 Behavioral checks per story were run by copying the real `lib` modules into a scratch dir with
-rewritten import paths and running under `node --experimental-strip-types --no-warnings`. Full-app
+rewritten import paths and running under `node --experimental-strip-types --no-warnings`. The
+cumulative suite (pass 3 + pass 4) counts 121 checks and re-runs in full each pass. Full-app
 check: `npx next build` (should be green, 28 routes as of pass 3). The mock store version key in
-`lib/mock-db.ts` (currently `__limsMockDbV23`) is bumped whenever the seed shape changes.
+`lib/mock-db.ts` (currently `__limsMockDbV24`) is bumped whenever the seed shape changes.
 
 ## Status
 
+- **Pass 4 complete (13 Jul 2026).** Run as an ultracode workflow on Fable 5 (10 reviewers —
+  3 × US-D2, 7 × consistency over the pass-2/3 fix areas → merge → 3 double-checks per finding →
+  coverage critic → 3 targeted round-2 reviewers). The first run lost 19 verifier agents to the
+  session token limit; resumed from the workflow cache after the reset — 15 findings, all
+  confirmed unanimously. 13 fixed with inline comments; 2 held as the decisions above (+2
+  sub-questions). Verified: `npx next build` green; **121 behavioral checks** (the 81 pass-3
+  checks re-run against the changed code + 40 new) all passing. Store key bumped to
+  `__limsMockDbV24`. Changes + reasoning for Steven: `docs/review-changes.md`. New decision-log
+  entries dated 13 Jul 2026.
+- **Pass-4 changed files (for Ramazan's commit):** `lib/mock-db.ts`, `lib/jobs/mock.ts`,
+  `lib/users/mock.ts`, `lib/batches/mock.ts`, `lib/batches/types.ts`,
+  `app/(app)/batches/batches-client.tsx`, `app/(app)/batches/[id]/batch-detail-client.tsx`,
+  `app/(app)/batches/[id]/import-dialog.tsx`, `app/(app)/jobs/[id]/page.tsx`,
+  `app/(app)/jobs/[id]/job-detail-client.tsx`, `docs/decision-log.md`,
+  `docs/review-changes.md`, this file.
 - **Pass 3 complete (10 Jul 2026).** Run as an ultracode workflow on Fable 5 (15 reviewers →
   merge, 53 raw → 28 canonical → 3 double-checks per finding → coverage critic → 5 targeted
   round-2 reviewers → 11 more findings; 3 findings whose verifiers died on API connection errors
@@ -218,10 +264,9 @@ check: `npx next build` (should be green, 28 routes as of pass 3). The mock stor
   when the Supabase backend is active (`NEXT_PUBLIC_SUPABASE_URL` set), since those demo credentials
   don't exist on the real backend and a login page shouldn't enumerate real accounts. Recorded in
   `docs/review-changes.md`.
-- **Next up (full remaining plan, in order):** pass 4 (US-D2 + consistency sweep, incl.
-  re-scanning everything the pass-3 fixes touched) as a workflow → a re-verification workflow
-  sweep over the already-reviewed areas (Epic A · B1 · B2 · C1–C4 · pass-2/3 scope; Ramazan
-  wants everything covered, spare tokens available — focus on regressions from the fixes and
-  anything earlier passes missed) → the backend pass **inline and last** (keep all workflow
-  launches before it, per the routing workaround above). When Ramazan decides the twelve open
-  items (4 from pass 2 + 8 from pass 3), build them too.
+- **Next up (full remaining plan, in order):** a re-verification workflow sweep over the
+  already-reviewed areas (Epic A · B1 · B2 · C1–C4 · pass-2/3/4 scope; Ramazan wants everything
+  covered, spare tokens available — focus on regressions from the fixes and anything earlier
+  passes missed) → the backend pass **inline and last** (keep all workflow launches before it,
+  per the routing workaround above). When Ramazan decides the sixteen open items (4 from
+  pass 2 + 8 from pass 3 + 4 from pass 4), build them too.

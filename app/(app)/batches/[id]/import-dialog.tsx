@@ -40,6 +40,10 @@ function matchLabel(row: ImportPreviewRow): { label: string; tone: "ok" | "warn"
       return { label: `${row.match.code} (QC)`, tone: "ok" };
     case "out-of-batch":
       return { label: `${row.match.sampleId} — not in this batch`, tone: "bad" };
+    // Two batch QC entries share this code — auto-picking one would be a
+    // silent wrong-target write; the user maps to the intended lot (pass-4).
+    case "ambiguous-qc":
+      return { label: `${row.match.code} — two QC entries share this code, map to the intended lot`, tone: "warn" };
     case "unknown":
       return { label: "no match in this batch", tone: "warn" };
   }
@@ -82,13 +86,15 @@ export function ImportDialog({
     () =>
       grid.rows.map((r) => ({
         key: `${r.targetType}:${r.targetId}`,
-        label: r.targetType === "qc" ? `${r.label} (QC)` : r.label,
+        // QC options carry name + FROZEN lot (the row sub) so two entries
+        // sharing a code stay distinguishable in the map dropdown (pass-4).
+        label: r.targetType === "qc" ? `${r.label} (QC${r.sub ? ` · ${r.sub}` : ""})` : r.label,
       })),
     [grid.rows],
   );
 
   const needsResolution = (row: ImportPreviewRow) =>
-    row.match.kind === "unknown" || row.match.kind === "out-of-batch";
+    row.match.kind === "unknown" || row.match.kind === "out-of-batch" || row.match.kind === "ambiguous-qc";
   const unresolved = (preview?.rows ?? []).filter((row) => {
     if (!needsResolution(row)) return false;
     const res = resolutions.get(row.rowNumber);
@@ -244,7 +250,7 @@ export function ImportDialog({
                     </div>
                     {needsResolution(row) && (
                       <div className="ml-10 mt-1 flex flex-wrap items-center gap-2">
-                        {row.match.kind === "unknown" && (
+                        {(row.match.kind === "unknown" || row.match.kind === "ambiguous-qc") && (
                           <Select
                             value={res?.action === "map" ? res.targetKey : ""}
                             onValueChange={(v) =>

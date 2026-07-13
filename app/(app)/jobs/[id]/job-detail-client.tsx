@@ -692,9 +692,12 @@ export function JobDetail({
 
         {/* History (AC 11) — a view on the audit log, filtered to this job. */}
         <TabsContent value="history" className="space-y-3">
+          {/* Real attributed events since the pass-4 fix — no longer an
+              "illustrative" reconstruction from current state. */}
           <p className="text-xs text-muted-foreground">
-            A read-only view of the audit trail for this {jobLabel.toLowerCase()}. Illustrative in
-            the mock — real timestamped entries come from the append-only audit log (epic E).
+            A read-only view of the append-only audit trail for this {jobLabel.toLowerCase()} —
+            every registration, edit (with before/after), acceptance decision, consultation,
+            evidence upload and void, with actor and timestamp.
           </p>
           <div className="overflow-x-auto rounded-lg border bg-card">
             <Table>

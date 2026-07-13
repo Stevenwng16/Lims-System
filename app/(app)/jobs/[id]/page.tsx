@@ -29,43 +29,17 @@ export async function generateMetadata({ params }: { params: Promise<{ id: strin
   return { title: `${label} ${id} — LIMS` };
 }
 
-// AC 11: the History tab is a VIEW on the append-only audit log, filtered to
-// this job. No audit log exists yet (a backend obligation), so the mock
-// reconstructs illustrative events from the current record — clearly labelled
-// as such in the UI. Real, timestamped history arrives with the audit log.
-function reconstructHistory(job: MockJob): HistoryEvent[] {
-  const events: HistoryEvent[] = [];
-  events.push({
-    when: job.createdAt,
-    who: job.createdBy,
-    action: `Job created, ${job.samples.length} sample(s) registered`,
-  });
-  for (const s of job.samples) {
-    if (s.consultation) {
-      events.push({
-        when: s.consultation.recordedAt,
-        who: s.consultation.recordedBy,
-        action: `Customer consultation recorded for ${s.id} (${s.consultation.who})`,
-      });
-    }
-    if (s.acceptance) {
-      const label =
-        s.acceptance === "accepted-with-reservation"
-          ? `accepted with reservation${s.reservationReason ? ` — ${s.reservationReason}` : ""}`
-          : s.acceptance;
-      events.push({ when: s.createdAt, who: job.createdBy, action: `Sample ${s.id} ${label}` });
-    }
-    for (const a of s.attachments) {
-      events.push({ when: a.uploadedAt, who: a.uploadedBy, action: `Evidence added to ${s.id}: ${a.fileName}` });
-    }
-    if (s.voided) {
-      events.push({ when: "—", who: "—", action: `Sample ${s.id} voided${s.voidReason ? ` — ${s.voidReason}` : ""}` });
-    }
-  }
-  if (job.voided) {
-    events.push({ when: "—", who: "—", action: `Job voided${job.voidReason ? ` — ${job.voidReason}` : ""}` });
-  }
-  return events;
+// AC 11 / AC 5: the History tab renders the job's REAL append-only audit
+// events (pass-4 review fix — it previously reconstructed "illustrative"
+// lines from current state, so an edit's before-values were unrecoverable
+// and voids showed with no actor or timestamp). Every job mutator now writes
+// one attributed event with before → after; this is a pure view of that list.
+function jobHistory(job: MockJob): HistoryEvent[] {
+  return job.events.map((e) => ({
+    when: e.at.slice(0, 16).replace("T", " "),
+    who: e.by,
+    action: e.summary,
+  }));
 }
 
 export default async function JobDetailPage({ params }: { params: Promise<{ id: string }> }) {
@@ -133,7 +107,7 @@ export default async function JobDetailPage({ params }: { params: Promise<{ id: 
         canPrint={canPrint}
         status={deriveJobStatus(job)}
         overdue={isJobOverdue(job)}
-        history={reconstructHistory(job)}
+        history={jobHistory(job)}
         sampleTypes={sampleTypes}
         labMethods={labMethods}
       />

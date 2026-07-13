@@ -117,6 +117,21 @@ function validateInput(input: UserInput): string | null {
   return null;
 }
 
+/** Append one audit event to the target user (US-A6 AC 12 / invariants 1+6 —
+ * pass-4 review fix: create/role/labs/clearances/status/unlock previously
+ * left no trace anywhere, so "who revoked this clearance, when?" had no
+ * answer). Same append-only convention as batches/equipment/configs. */
+function addUserEvent(target: MockUser, actorEmail: string, summary: string): void {
+  target.events.push({
+    id: `uev-${crypto.randomUUID()}`,
+    at: new Date().toISOString(),
+    by: actorEmail,
+    summary,
+  });
+}
+
+const listLabel = (values: string[]) => (values.length ? values.join(", ") : "none");
+
 export const mockUserApi: UserApi = {
   async listUsers(actor): Promise<UserListItem[]> {
     if (!isManager(actor)) return [];
@@ -143,6 +158,10 @@ export const mockUserApi: UserApi = {
     }
 
     const org = mockDb.organisations.get(actor.orgId);
+    const clearances =
+      input.role === "analyst"
+        ? input.clearances.filter((id) => grantableMethodIds(actor).has(id))
+        : [];
     mockDb.users.set(email, {
       email,
       name: input.name.trim(),
@@ -150,10 +169,7 @@ export const mockUserApi: UserApi = {
       role: input.role,
       orgId: actor.orgId,
       labs: input.labs,
-      clearances:
-        input.role === "analyst"
-          ? input.clearances.filter((id) => grantableMethodIds(actor).has(id))
-          : [],
+      clearances,
       status: "active",
       lastLogin: null,
       // AC 3: the admin never sets or sees a password — the invite flow does.
@@ -162,7 +178,15 @@ export const mockUserApi: UserApi = {
       mfaRequired: false,
       failedAttempts: 0,
       locked: false,
+      // US-A6 AC 12: creation is the first entry of the account's audit trail
+      // (pass-4 review fix).
+      events: [],
     });
+    addUserEvent(
+      mockDb.users.get(email)!,
+      actor.email,
+      `Account created (role ${input.role}, labs ${listLabel(input.labs)}${clearances.length ? `, clearances ${listLabel(clearances)}` : ""})`,
+    );
     // userCount is derived live in the platform console (finding 9) — nothing
     // to increment here.
     console.log(
@@ -223,25 +247,63 @@ export const mockUserApi: UserApi = {
       return { status: "error", message: "Assign the user to at least one lab." };
     }
 
-    if (newEmail !== targetEmail) {
-      mockDb.users.delete(targetEmail);
-      target.email = newEmail;
-      mockDb.users.set(newEmail, target);
-    }
-    target.name = input.name.trim();
-    target.role = input.role;
-    target.labs = mergedLabs;
-    // AC 4/5: immediate effect. Only touch clearances when the saved role is
-    // Analyst; on a role change away from Analyst they stay DORMANT, not
-    // destroyed (audit finding 22). Within an analyst edit, merge so
-    // out-of-scope / deactivated-method clearances survive (US-B1 AC 12).
+    // Compute the post-edit clearances FIRST so the audit diff below compares
+    // real before/after values. AC 4/5: immediate effect. Only touch
+    // clearances when the saved role is Analyst; on a role change away from
+    // Analyst they stay DORMANT, not destroyed (audit finding 22). Within an
+    // analyst edit, merge so out-of-scope / deactivated-method clearances
+    // survive (US-B1 AC 12).
+    let newClearances = target.clearances;
     if (input.role === "analyst") {
       const grantable = grantableMethodIds(actor);
       const granted = input.clearances.filter((id) => grantable.has(id));
       const keptOutOfScope = target.clearances.filter((id) => !grantable.has(id));
-      target.clearances = [...new Set([...granted, ...keptOutOfScope])];
+      newClearances = [...new Set([...granted, ...keptOutOfScope])];
     }
+
+    // US-A6 AC 12 (pass-4 review fix): every change with before → after.
+    const changes: string[] = [];
+    const diff = (label: string, before: string, after: string) => {
+      if (before !== after) changes.push(`${label}: ${before} → ${after}`);
+    };
+    diff("name", target.name, input.name.trim());
+    diff("email", target.email, newEmail);
+    diff("role", target.role, input.role);
+    diff("labs", listLabel(target.labs), listLabel(mergedLabs));
+    diff("clearances", listLabel(target.clearances), listLabel(newClearances));
+    diff("status", target.status, input.status);
+
+    if (newEmail !== targetEmail) {
+      mockDb.users.delete(targetEmail);
+      target.email = newEmail;
+      mockDb.users.set(newEmail, target);
+      // batch.assignee stores the user's EMAIL: re-point the user's claims on
+      // UNFINISHED batches to the corrected address (pass-4 review fix —
+      // previously they dangled on the deleted key: no Release button, no
+      // "Mine" filter, no name resolution, unclaimable by anyone). Finished
+      // batches keep the historical address — closed records are not
+      // rewritten; the rename itself is audited here and on each batch.
+      // NOTE for Steven: the real backend should key assignment to a stable
+      // user id, not the mutable email (US-A6 AC 13 identity/membership split).
+      for (const batch of mockDb.batches.values()) {
+        if (batch.orgId !== actor.orgId || batch.assignee !== targetEmail) continue;
+        if (batch.status !== "open" && batch.status !== "awaiting-review") continue;
+        batch.assignee = newEmail;
+        batch.events.push({
+          id: `bev-${crypto.randomUUID()}`,
+          at: new Date().toISOString(),
+          by: actor.email,
+          type: "assignment-changed",
+          summary: `Assignee email corrected: ${targetEmail} → ${newEmail} (user identity updated, US-A6)`,
+        });
+      }
+    }
+    target.name = input.name.trim();
+    target.role = input.role;
+    target.labs = mergedLabs;
+    target.clearances = newClearances;
     target.status = input.status;
+    if (changes.length > 0) addUserEvent(target, actor.email, `Account edited: ${changes.join("; ")}`);
     return { status: "success" };
   },
 
@@ -252,6 +314,7 @@ export const mockUserApi: UserApi = {
     const denied = labManagerTargetViolation(actor, target);
     if (denied) return { status: "error", message: denied };
     console.log(`[mock users] password reset sent to ${targetEmail} (triggered by ${actor.email})`);
+    addUserEvent(target, actor.email, "Password reset sent"); // US-A6 AC 12 (pass-4 fix)
     return { status: "success" };
   },
 
@@ -261,8 +324,10 @@ export const mockUserApi: UserApi = {
     if (!target || target.orgId !== actor.orgId) return { status: "error", message: "Unknown user." };
     const denied = labManagerTargetViolation(actor, target);
     if (denied) return { status: "error", message: denied };
+    const wasLocked = target.locked;
     target.locked = false;
     target.failedAttempts = 0;
+    if (wasLocked) addUserEvent(target, actor.email, "Account unlocked"); // US-A6 AC 12 (pass-4 fix)
     return { status: "success" };
   },
 };

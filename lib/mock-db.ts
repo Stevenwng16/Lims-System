@@ -139,9 +139,21 @@ export function defaultOrgSettings(): OrgSettings {
 // credentials) from *organisation membership* (role, labs, clearances). The
 // mock keeps a flat record because it only ever has one membership per
 // identity (AC 11) — the split is a backend obligation, not a UI one.
+// Append-only per-user audit events (US-A6 AC 12: every user-management
+// action — create, role change, clearance grant/revoke, lab change,
+// (de)activation, reset/unlock — with who/whom/what/when; pass-4 review fix:
+// nothing was recorded anywhere). Same per-entity convention as elsewhere.
+export type MockUserEvent = {
+  id: string;
+  at: string; // ISO
+  by: string; // the acting manager/admin
+  summary: string; // "field: old → new" per changed field
+};
+
 export type MockUser = SessionUser & {
   orgId: string | null; // null for platform (vendor) staff
   labs: string[]; // lab assignments (edited in US-A6)
+  events: MockUserEvent[]; // append-only (see MockUserEvent)
   clearances: string[]; // method IDs the user is cleared for (US-A4 AC 6; edited in US-A6; ids are stable across method versions/renames)
   status: "active" | "inactive"; // deactivated, never deleted (US-A6 AC 6)
   lastLogin: string | null;
@@ -270,6 +282,18 @@ export type MockSample = {
   createdAt: string;
 };
 
+// Append-only per-job audit events (US-C3 AC 5: job edits recorded with
+// before/after — pass-4 review fix; previously the History tab reconstructed
+// "illustrative" events from current state, so an edit's before-value was
+// gone forever and a stale save could revert a colleague's changes without a
+// trace). Same per-entity convention as batches/equipment/configs.
+export type MockJobEvent = {
+  id: string;
+  at: string; // ISO
+  by: string;
+  summary: string; // "field: old → new" on edits; reasons on voids
+};
+
 export type MockJob = {
   id: string; // the job number (AC 2) — immutable
   orgId: string;
@@ -288,6 +312,7 @@ export type MockJob = {
   createdAt: string;
   createdBy: string;
   samples: MockSample[];
+  events: MockJobEvent[]; // append-only (see MockJobEvent)
 };
 
 // Batches (US-D1). A batch belongs to one lab within one organisation
@@ -805,6 +830,7 @@ function seedDb(): MockDb {
   users.set("admin@demolab.nl", {
     ...base,
     email: "admin@demolab.nl",
+    events: [], // per-user audit trail (US-A6 AC 12 — pass-4 fix); fresh array per user
     name: "Alex Admin",
     organisation: "Demo Lab",
     role: "admin",
@@ -816,6 +842,7 @@ function seedDb(): MockDb {
   users.set("labmanager@demolab.nl", {
     ...base,
     email: "labmanager@demolab.nl",
+    events: [], // per-user audit trail (US-A6 AC 12 — pass-4 fix); fresh array per user
     name: "Lisa Manager",
     organisation: "Demo Lab",
     role: "lab-manager",
@@ -827,6 +854,7 @@ function seedDb(): MockDb {
   users.set("analyst@demolab.nl", {
     ...base,
     email: "analyst@demolab.nl",
+    events: [], // per-user audit trail (US-A6 AC 12 — pass-4 fix); fresh array per user
     name: "Sam Analyst",
     organisation: "Demo Lab",
     role: "analyst",
@@ -838,6 +866,7 @@ function seedDb(): MockDb {
   users.set("readonly@demolab.nl", {
     ...base,
     email: "readonly@demolab.nl",
+    events: [], // per-user audit trail (US-A6 AC 12 — pass-4 fix); fresh array per user
     name: "Rob Reader",
     organisation: "Demo Lab",
     role: "read-only",
@@ -850,6 +879,7 @@ function seedDb(): MockDb {
   users.set("user@oldcust.nl", {
     ...base,
     email: "user@oldcust.nl",
+    events: [], // per-user audit trail (US-A6 AC 12 — pass-4 fix); fresh array per user
     name: "Olga Oldcust",
     organisation: "OldCust BV",
     role: "read-only",
@@ -861,6 +891,7 @@ function seedDb(): MockDb {
   users.set("vendor@lims.dev", {
     ...base,
     email: "vendor@lims.dev",
+    events: [], // per-user audit trail (US-A6 AC 12 — pass-4 fix); fresh array per user
     name: "Vera Vendor",
     organisation: "LIMS Platform",
     role: "platform-admin",
@@ -1512,6 +1543,14 @@ function seedDb(): MockDb {
         // Awaiting decision: a mismatch forces a consultation before acceptance.
       }),
     ],
+    // Real per-job audit events (pass-4 fix): the History tab renders THESE
+    // instead of reconstructing "illustrative" lines from current state — the
+    // seed mirrors what the stored record asserts (US-C3 AC 5 / invariant 1).
+    events: [
+      { id: "jev-1-created", at: "2026-06-09T14:20:00", by: "labmanager@demolab.nl", summary: "Job created: 3 sample(s) (MET26-00001.001, MET26-00001.002, MET26-00001.003)" },
+      { id: "jev-1-acc1", at: "2026-06-09T15:00:00", by: "labmanager@demolab.nl", summary: "Sample MET26-00001.001: acceptance awaiting decision → accepted" },
+      { id: "jev-1-acc2", at: "2026-06-09T15:01:00", by: "labmanager@demolab.nl", summary: "Sample MET26-00001.002: acceptance awaiting decision → accepted-with-reservation — Minor leakage on receipt; result may be affected." },
+    ],
   });
   const metJob = (
     id: string,
@@ -1536,6 +1575,23 @@ function seedDb(): MockDb {
     createdAt: "20 Jun 2026",
     createdBy: "labmanager@demolab.nl",
     samples,
+    // Created + acceptance events derived from the seeded samples, so every
+    // seed job's History renders real audit lines (pass-4 fix). A voided seed
+    // job additionally gets its void event via `extra`-aware generation below.
+    events: [
+      { id: `jev-${id}-created`, at: "2026-06-20T09:00:00", by: "labmanager@demolab.nl", summary: `Job created: ${samples.length} sample(s) (${samples.map((s) => s.id).join(", ")})` },
+      ...samples
+        .filter((s) => s.acceptance !== null)
+        .map((s, i) => ({
+          id: `jev-${id}-acc${i + 1}`,
+          at: "2026-06-20T09:30:00",
+          by: "labmanager@demolab.nl",
+          summary: `Sample ${s.id}: acceptance awaiting decision → ${s.acceptance}`,
+        })),
+      ...(extra.voided
+        ? [{ id: `jev-${id}-void`, at: "2026-06-21T09:00:00", by: "labmanager@demolab.nl", summary: `Job voided — ${extra.voidReason ?? ""}` }]
+        : []),
+    ],
     ...extra,
   });
   // Not started (samples accepted, still "received"); deadline in the future.
@@ -1586,13 +1642,16 @@ function seedDb(): MockDb {
         materialId: "qc-cs1",
         quantity: 1,
         // Frozen when the material entered the batch (pass-3 review fix) —
-        // mirrors the qc-cs1 material seed at that moment.
+        // mirrors the qc-cs1 material seed at that moment, ALL THREE analytes
+        // (pass-4 fix: the snapshot had omitted the material's Zn line, so the
+        // demo review context provably differed from the lot at entry).
         expectations: {
           type: "control-standard",
           lotNumber: "MM-2026-A",
           expectedValues: [
             { analyteName: "Pb", unit: "mg/L", expectedValue: "5.0", tolerance: { kind: "absolute", value: "0.3" } },
             { analyteName: "Cd", unit: "mg/L", expectedValue: "2.0", tolerance: { kind: "percent", value: "5" } },
+            { analyteName: "Zn", unit: "mg/L", expectedValue: "10.0", tolerance: { kind: "absolute", value: "0.5" } },
           ],
         },
       },
@@ -1623,6 +1682,13 @@ function seedDb(): MockDb {
       { id: "bev-1-s4", at: "2026-06-24T14:00:00.000Z", by: "labmanager@demolab.nl", type: "step-completed", summary: "Step 4 \"Review\" completed", step: { index: 3, id: "s4", name: "Review" } },
       { id: "bev-1-ws", at: "2026-06-24T15:40:00.000Z", by: "analyst@demolab.nl", type: "worksheet-uploaded", summary: "Completed worksheet v1: worksheet_METB26-0001_completed.xlsx" },
       { id: "bev-1-s5", at: "2026-06-24T16:00:00.000Z", by: "labmanager@demolab.nl", type: "step-completed", summary: "Step 5 \"Report\" completed — batch moved to Awaiting review", step: { index: 4, id: "s5", name: "Report" } },
+      // One result-validity event per decided record (pass-4 fix): the four
+      // records below assert validity flips that the append-only History must
+      // be able to prove — decideRecord writes exactly these in real flows.
+      { id: "bev-1-v1", at: "2026-06-24T16:00:00.000Z", by: "labmanager@demolab.nl", type: "result-validity", summary: "Result MET26-00004.001 · Pb (0.042): valid" },
+      { id: "bev-1-v2", at: "2026-06-24T16:00:00.000Z", by: "labmanager@demolab.nl", type: "result-validity", summary: "Result MET26-00004.001 · Cd (<0.005): valid" },
+      { id: "bev-1-v3", at: "2026-06-24T16:00:00.000Z", by: "labmanager@demolab.nl", type: "result-validity", summary: "Result MET26-00004.001 · Zn (3.1): valid" },
+      { id: "bev-1-v4", at: "2026-06-24T16:00:00.000Z", by: "labmanager@demolab.nl", type: "result-validity", summary: "Result CS1 · Pb (5.1): valid" },
       { id: "bev-1-done", at: "2026-06-24T16:30:00.000Z", by: "labmanager@demolab.nl", type: "batch-completed", summary: "Batch completed — 4 result(s) valid, 0 rejected (review approval)" },
     ],
     // Reviewed results (validity set by review — US-D6's transition, seeded
@@ -1770,10 +1836,11 @@ function seedDb(): MockDb {
   };
 }
 
-// V23: pass-3 review — QC expectation snapshots on batch QC entries, reviewAct
-// flag on measurement records, config attribution/events, settingsEvents,
-// pendingBulk staging, seed batch METB26-0001 completion-gate coherence.
-export const mockDb: MockDb = ((globalThis as Record<string, unknown>).__limsMockDbV23 ??=
+// V24: pass-4 review — per-job and per-user audit event lists (US-C3 AC 5 /
+// US-A6 AC 12), seed batch METB26-0001 gains its Zn expectation line and its
+// four result-validity events. (V23: pass-3 — QC expectation snapshots,
+// reviewAct flag, config attribution/events, settingsEvents, pendingBulk.)
+export const mockDb: MockDb = ((globalThis as Record<string, unknown>).__limsMockDbV24 ??=
   seedDb()) as MockDb;
 
 export function getOrgSettings(orgId: string): OrgSettings {

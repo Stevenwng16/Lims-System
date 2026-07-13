@@ -5,6 +5,109 @@ reasoning, written for Steven and future readers. Newest pass first. Each change
 inline comment at the spot in the code; fundamental choices are one-liners in
 `docs/decision-log.md`.
 
+## Pass 4 — US-D2 work queue · consistency sweep over the pass-2/3 fix areas (13 Jul 2026)
+
+Run as a multi-agent review (10 scoped reviewers — 3 on US-D2, 7 consistency lanes → merge →
+3 independent double-checks per finding → coverage check → 3 targeted round-2 reviewers). The
+first run lost 19 agents to the session token limit; resumed from cache once the limit reset —
+all 15 canonical findings ended **unanimously confirmed**. **13 fixed below; 2 are design
+decisions waiting on Ramazan** (see `docs/review-progress.md` § "Pass-4 open decisions").
+Verified: `npx next build` green; the full behavioral suite now counts **121 checks** (the 81
+pass-3 checks re-run against the changed code + 40 new pass-4 checks), all passing. Store key
+bumped to `__limsMockDbV24`.
+
+### High — a QC code carried by two batch entries no longer matches last-wins
+
+QC codes are unique among ACTIVE materials only, and pass-2's grandfathering legally lets one
+batch hold two entries whose materials share a code (deactivate + recreate + open-window edit).
+Both code-keyed matchers — import and worksheet auto-read — silently attributed every such row
+to whichever entry iterated last: a wrong-target QC write, judged against the wrong lot's
+frozen expectations, that the staged match set could not catch (preview and confirm computed
+the same wrong match). Now (`lib/batches/mock.ts`):
+
+- The import matcher returns a new `ambiguous-qc` match for colliding codes: the row must be
+  explicitly **mapped to the intended entry** (or skipped), confirm stays blocked meanwhile,
+  and the preview notice names both lots. The map dropdown now shows name + frozen lot next to
+  each QC option so the two entries are distinguishable.
+- The worksheet auto-read (which has no mapping UI) refuses the sheet with a clear
+  fall-back-to-manual reason when a row references a colliding code.
+- A complementary question is held for Ramazan: whether the composition edit that CREATES the
+  collision should itself be blocked (see the open-decisions list).
+
+### Medium — jobs and user accounts now have the audit trails their ACs demand
+
+Two whole action classes wrote no audit anywhere:
+
+- **US-C3 AC 5** (job edits "recorded with before/after"): `updateJob` was a last-wins,
+  traceless full-state replace — a stale save silently reverted a colleague's changes, and the
+  job History tab *reconstructed* "illustrative" lines from current state, so before-values
+  were unrecoverable. `MockJob` now carries an append-only `events` list written by every
+  mutator: created, edited (per-field and per-sample before → after), acceptance decisions
+  (old → new + reason), consultations, sample adds, evidence uploads, and voids (job + sample)
+  with actor and reason. The History tab renders the real list (`lib/jobs/mock.ts`,
+  `app/(app)/jobs/[id]/page.tsx`).
+- **US-A6 AC 12** (every user-management action with who/whom/what/when): `MockUser` now
+  carries the same `events` list — account created, every edit with field-level before → after
+  (name, email, role, labs, clearances, status), password reset, unlock
+  (`lib/users/mock.ts`).
+
+### Medium — assignment follows the user lifecycle
+
+- **Email correction re-points claims** (`lib/users/mock.ts`): `batch.assignee` stores the
+  email, and a rename used to dangle it on the deleted key — the owner lost the Mine filter and
+  the Release button, the queue showed the raw old address, and nobody could claim the batch.
+  An email change now re-points the assignee on the org's UNFINISHED batches and writes an
+  `assignment-changed` event on each; finished batches keep the historical address. (Note for
+  Steven: the real backend should key assignment to a stable user id — US-A6 AC 13's
+  identity/membership split.)
+- **Departed assignees are badged** (`lib/batches/mock.ts` + both batch views): a new
+  server-computed `assigneeCanAct` flag (live check: active account + lab access + clearance)
+  rides `BatchListRow` and `BatchDetail`; the queue row and the detail header badge
+  "unavailable", and the Assign dialog explains why the current assignee is absent from the
+  options instead of rendering a blank selection. Whether such a batch should also auto-return
+  to the pool is held for Ramazan.
+
+### Medium — the staged-confirm contract tightened twice more
+
+- **Verdicts now carry the validated value** (`BulkPreviewCell`): the pass-3 divergence guard
+  compared display strings, so a qualifier named "12" added mid-window flipped a previewed
+  *numeric* 12 into a *qualifier* record without a refusal (identical display). The accepted
+  verdict now embeds the validated `ResultValue`; the equality check catches kind/id flips and
+  the confirm writes exactly the staged value — never a re-derivation against live settings.
+- **The import replace gate is row-scoped** (`confirmImport`): it was keyed by cell, so with
+  replace-all a row *mapped at confirm* could inherit a conflict the user previewed on a
+  different row — superseding with a value never shown as the replacer while the previewed row
+  was rejected as a duplicate; without replace-all the mapped row could claim the cell as
+  kept-existing and starve the previewed row's explicitly ticked replacement. Replace now
+  additionally requires the target to come from the compute-time match, and a planned cell is
+  claimed by actual writes only.
+
+### Low / display — queue correctness details
+
+- **AC 1 creation-date column** added to the batch list (the server always delivered it;
+  the client never rendered it).
+- **Job deadlines validated server-side** (`lib/jobs/mock.ts`): empty, or a real yyyy-mm-dd
+  date — the regex alone is not enough because JS rolls "2026-02-31" over to 3 March, so the
+  components are round-tripped. Previously only the client date control guaranteed the format,
+  while the batch queue compares the string lexicographically ("07/15/2026" sorted on top,
+  flagged ⚠, and disagreed with the job overview about the same deadline).
+- **One overdue rule** (US-D2 AC 2): `BatchDetail` now carries the server-computed `overdue`
+  and the detail header consumes it — its local recomputation flagged due-today and even
+  completed/voided batches with the same ⚠ the list correctly withheld.
+- **QC row headers show the frozen lot** (`resultsGrid`): the row header resolved the LIVE
+  material lot while the expectation cell shows the snapshot lot — one review row could name
+  two different lots after a masterdata correction.
+- **Seed coherence** (store key → V24): METB26-0001's expectation snapshot gains the Zn line
+  the material carried at entry, and the four decided results gain their four `result-validity`
+  audit events (the History tab could not prove the flips its records asserted).
+
+### Held for Ramazan (not fixed — design decisions)
+
+See `docs/review-progress.md` § "Pass-4 open decisions": the step filter vs pinned method
+versions; the Unassigned-filter semantics on finished batches; plus two sub-questions from the
+fixes above (block collision-creating composition edits; auto-return stalled batches to the
+pool).
+
 ## Pass 3 — US-D4 data entry · US-D5 instrument import · US-D6 review & completion (10 Jul 2026)
 
 Run as a multi-agent review (15 scoped reviewers → duplicate-merge, 53 raw → 28 canonical →

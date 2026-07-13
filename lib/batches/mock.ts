@@ -138,6 +138,18 @@ function actorForOrgUser(orgId: string, email: string): BatchActor | null {
   return { email: user.email, role: user.role, labs: user.labs, orgId, isSupport: false };
 }
 
+/** LIVE check: can the batch's current assignee still act on it? False when
+ * the account was deactivated, moved out of the lab, de-cleared or demoted —
+ * the queue must badge such a batch instead of presenting it as covered
+ * (pass-4 review fix: every view showed a departed assignee as normal
+ * coverage while Claim never appeared, stalling the batch invisibly; same
+ * stale-reference convention as voided-sample badges). true when unassigned. */
+function assigneeCanAct(batch: MockBatch): boolean {
+  if (batch.assignee === null) return true;
+  const assignee = actorForOrgUser(batch.orgId, batch.assignee);
+  return assignee !== null && canWorkBatch(assignee, batch) === null;
+}
+
 function findSample(orgId: string, sampleId: string): { job: MockJob; sample: MockSample } | null {
   for (const job of mockDb.jobs.values()) {
     if (job.orgId !== orgId) continue;
@@ -578,6 +590,9 @@ export const mockBatchApi: BatchApi = {
           overdue: isOverdue(b, deadline),
           assignee: b.assignee,
           assigneeName: userName(b.assignee),
+          // Live server-side signal (pass-4 fix): false = the assignee can no
+          // longer act (deactivated / moved lab / de-cleared) — badge it.
+          assigneeCanAct: assigneeCanAct(b),
           // US-D2 AC 6: claimable = unassigned, unfinished, and THIS actor may
           // work on it (per-batch: clearance depends on the method).
           canClaim: active && b.assignee === null && canWorkBatch(actor, b) === null,
@@ -681,8 +696,14 @@ export const mockBatchApi: BatchApi = {
         : [],
       assignee: batch.assignee,
       assigneeName: userName(batch.assignee),
+      // Live signal, same as the list row (pass-4 fix).
+      assigneeCanAct: assigneeCanAct(batch),
       statusLabel: statusLabelFor(batch, pinned),
       deadline: batchDeadline(batch),
+      // Computed ONCE server-side with the same rule as the list (pass-4 fix:
+      // the detail header used to recompute it as deadline <= today with no
+      // status check, so a completed batch kept a ⚠ the list never showed).
+      overdue: isOverdue(batch, batchDeadline(batch)),
       steps: buildStepsRail(batch, pinned),
       worksheets: batch.worksheets,
       // History IS the event list — the tab renders this array directly,
@@ -1150,7 +1171,11 @@ export const mockBatchApi: BatchApi = {
           targetType: "qc" as const,
           targetId: entry.materialId,
           label: rowLabelFor(batch, { targetType: "qc", targetId: entry.materialId }),
-          sub: `${material?.name ?? ""}${material?.lotNumber ? ` (lot ${material.lotNumber})` : ""}`,
+          // The lot comes from the SNAPSHOT frozen when the entry joined the
+          // batch (pass-4 review fix): the review view's expectation cells
+          // read the snapshot, so the row header must name the same lot — a
+          // live lookup showed a post-edit lot next to the frozen one.
+          sub: `${material?.name ?? ""}${entry.expectations.lotNumber ? ` (lot ${entry.expectations.lotNumber})` : ""}`,
         };
       }),
     ];
@@ -1267,13 +1292,10 @@ export const mockBatchApi: BatchApi = {
     let written = 0;
     for (const cell of cells) {
       if (cell.outcome.kind !== "accepted") continue;
-      const input = interpretRawCell(batch.orgId, cell.raw);
-      if ("error" in input) continue;
-      const loq = pinned.analytes.find((a) => a.id === cell.analyteId)?.loq ?? null;
-      const validated = validateResultInput(batch.orgId, input, loq);
-      if ("error" in validated) continue;
+      // Write the value CARRIED BY the verdict that just passed the equality
+      // check — never a re-derivation against live settings (pass-4 fix).
       const analyteName = pinned.analytes.find((a) => a.id === cell.analyteId)?.name ?? cell.analyteId;
-      appendRecord(batch, actor, cell.target, cell.analyteId, validated.value, "manual", null, null, null, null, cell.rowLabel, analyteName);
+      appendRecord(batch, actor, cell.target, cell.analyteId, cell.outcome.value, "manual", null, null, null, null, cell.rowLabel, analyteName);
       written += 1;
     }
     mockDb.pendingBulk.delete(token); // one-use
@@ -1337,18 +1359,15 @@ export const mockBatchApi: BatchApi = {
     let written = 0;
     for (const cell of cells) {
       if (cell.outcome.kind !== "accepted") continue;
-      const input = interpretRawCell(batch.orgId, cell.raw);
-      if ("error" in input) continue;
-      const loq = pinned.analytes.find((a) => a.id === cell.analyteId)?.loq ?? null;
-      const validated = validateResultInput(batch.orgId, input, loq);
-      if ("error" in validated) continue;
+      // Write the value CARRIED BY the verdict that just passed the equality
+      // check — never a re-derivation against live settings (pass-4 fix).
       const analyteName = pinned.analytes.find((a) => a.id === cell.analyteId)?.name ?? cell.analyteId;
       appendRecord(
         batch,
         actor,
         cell.target,
         cell.analyteId,
-        validated.value,
+        cell.outcome.value,
         "worksheet",
         parsed.worksheetVersion,
         null,
@@ -1633,7 +1652,9 @@ export const mockBatchApi: BatchApi = {
           (n, r) => n + r.cells.filter((c) => c.verdict.kind === "conflict").length,
           0,
         ),
-        unresolvedCount: rows.filter((r) => r.match.kind === "unknown" || r.match.kind === "out-of-batch").length,
+        unresolvedCount: rows.filter(
+          (r) => r.match.kind === "unknown" || r.match.kind === "out-of-batch" || r.match.kind === "ambiguous-qc",
+        ).length,
       },
     };
   },
@@ -1736,6 +1757,12 @@ export const mockBatchApi: BatchApi = {
       let target: ResultTarget | null = null;
       let matchedLabel: string | null = null;
       let skipped: string | null = null;
+      // True when the target comes from a confirm-time MAP resolution rather
+      // than the compute-time match: such rows were never previewed as
+      // conflicts, so they may never replace (pass-4 review fix — with
+      // replaceAll a mapped row could inherit a staged conflict keyed on the
+      // same CELL and displace the previewed row's explicit replacement).
+      let fromResolution = false;
 
       if (row.match.kind === "sample") {
         target = { targetType: "sample", targetId: row.match.id };
@@ -1762,6 +1789,7 @@ export const mockBatchApi: BatchApi = {
             return { status: "error", message: `Row ${row.rowNumber}: the mapped target is not in this batch.` };
           }
           target = resolution.target;
+          fromResolution = true;
           matchedLabel = `${resolution.target.targetType}:${resolution.target.targetId}`;
         } else if (resolution?.action === "skip" && resolution.reason.trim()) {
           skipped = resolution.reason.trim();
@@ -1779,8 +1807,9 @@ export const mockBatchApi: BatchApi = {
           }
           const cellId = cellKey(target, cell.analyteId);
           if (plannedCells.has(cellId)) {
-            // See plannedCells above — a confirm-time map resolution collided
-            // with another row's cell: first row wins, this one is rejected.
+            // See plannedCells above — a second WRITE into the same cell in
+            // one confirm (only reachable via a map resolution colliding with
+            // another row): first write wins, this one is rejected.
             cellOutcomes.push({
               analyteName: cell.analyteName,
               raw: cell.raw,
@@ -1789,20 +1818,26 @@ export const mockBatchApi: BatchApi = {
             });
             continue;
           }
-          plannedCells.add(cellId);
           const existing = current.get(cellId) ?? null;
-          // Replace applies ONLY to conflicts the preview showed, anchored to
-          // the exact record the user saw (pass-3 review fix): a conflict on
-          // a row MAPPED at confirm time was never previewed as a conflict —
-          // it defaults to keep-existing, visible in the event's cells.
+          // Replace applies ONLY to conflicts the preview showed ON THIS ROW,
+          // anchored to the exact record the user saw (pass-3 fix, tightened
+          // in pass 4): the gate additionally requires the target to come
+          // from the compute-time match — a row MAPPED at confirm was never
+          // previewed as a conflict and defaults to keep-existing even under
+          // replaceAll, so it can never displace a previewed replacement.
           const replaceRequested =
             existing !== null && (replaceAll || replaceSet.has(`${row.rowNumber}:${cell.analyteName.toLowerCase()}`));
-          const replace = replaceRequested && existing !== null && stagedConflicts.get(cellId) === existing.id;
+          const replace =
+            replaceRequested && !fromResolution && existing !== null && stagedConflicts.get(cellId) === existing.id;
           if (existing && !replace) {
+            // Kept cells do NOT claim the cell (pass-4 fix): a mapped row
+            // keeping an existing value must not starve a later previewed
+            // row's explicitly ticked replacement of the same cell.
             cellOutcomes.push({ analyteName: cell.analyteName, raw: cell.raw, result: "kept-existing", reason: "" });
             continue; // AC 7 default: keep existing
           }
           if (existing && replace) anyReplace = true;
+          plannedCells.add(cellId); // claimed by an actual WRITE only (pass-4 fix)
           writes.push({
             rowNumber: row.rowNumber,
             target,
@@ -2522,18 +2557,37 @@ function computeImport(
     }
   }
 
-  // Row matching (AC 4).
+  // Row matching (AC 4). QC codes are unique among ACTIVE materials only, and
+  // the pass-2 grandfathering rule legally lets one batch hold TWO entries
+  // whose materials share a code (deactivate + recreate + open-window edit).
+  // A code-keyed map would silently attribute every such row to whichever
+  // entry iterates last — a wrong-target QC write judged against the wrong
+  // lot's expectations. Colliding codes therefore match as AMBIGUOUS: the row
+  // must be explicitly mapped to the intended entry (or skipped), and the
+  // preview names both lots (pass-4 review fix; same fail-loudly discipline
+  // as the duplicate-header rule).
   const sampleById = new Map(batch.sampleIds.map((id) => [id.toLowerCase(), id] as const));
+  const qcCodeCounts = new Map<string, number>();
+  for (const e of batch.qc) {
+    const code = (mockDb.qcMaterials.get(e.materialId)?.code ?? e.materialId).toLowerCase();
+    qcCodeCounts.set(code, (qcCodeCounts.get(code) ?? 0) + 1);
+  }
+  const collidingQcCodes = new Set([...qcCodeCounts].filter(([, n]) => n > 1).map(([c]) => c));
   const qcByCode = new Map(
     batch.qc.map((e) => {
       const code = mockDb.qcMaterials.get(e.materialId)?.code ?? e.materialId;
       return [code.toLowerCase(), { materialId: e.materialId, code }] as const;
     }),
   );
+  const ambiguousCodesSeen = new Set<string>();
   const matchRow = (idCell: string): ImportPreviewRow["match"] => {
     const key = idCell.trim().toLowerCase();
     const sample = sampleById.get(key);
     if (sample) return { kind: "sample", id: sample };
+    if (collidingQcCodes.has(key)) {
+      ambiguousCodesSeen.add(key);
+      return { kind: "ambiguous-qc", code: idCell.trim() };
+    }
     const qc = qcByCode.get(key);
     if (qc) return { kind: "qc", materialId: qc.materialId, code: qc.code };
     // An ID that belongs to a sample OUTSIDE this batch is shown as such and
@@ -2653,6 +2707,17 @@ function computeImport(
   for (const [name, count] of unknownLongAnalytes) {
     notices.push(`Analyte "${name}" (${count} row(s)) is not on this method — ignored (instruments often measure more than the method reports).`);
   }
+  // Name BOTH lots for every ambiguous code the file referenced (pass-4 fix),
+  // so the user can map each row to the intended entry.
+  for (const code of ambiguousCodesSeen) {
+    const lots = batch.qc
+      .filter((e) => (mockDb.qcMaterials.get(e.materialId)?.code ?? e.materialId).toLowerCase() === code)
+      .map((e) => e.expectations.lotNumber || "no lot")
+      .join(" and ");
+    notices.push(
+      `QC code "${code.toUpperCase()}" is carried by two entries of this batch (lot ${lots}) — map each of its rows to the intended entry, or skip them.`,
+    );
+  }
   // AC 4: all rows with one QC code attach to that entry; count vs quantity
   // is a notice, never a block.
   for (const entry of batch.qc) {
@@ -2676,6 +2741,8 @@ function matchKeyOf(match: ImportPreviewRow["match"]): string {
       return `qc:${match.materialId}`;
     case "out-of-batch":
       return `out-of-batch:${match.sampleId}`;
+    case "ambiguous-qc":
+      return `ambiguous-qc:${match.code.toLowerCase()}`;
     case "unknown":
       return "unknown";
   }
@@ -2989,6 +3056,15 @@ function parseWorksheetEntries(
   if (ignored.length > 0) notices.push(`Ignored columns (no matching analyte): ${ignored.join(", ")}`);
 
   const sampleIds = new Map(batch.sampleIds.map((id) => [id.toLowerCase(), id] as const));
+  // Same ambiguity rule as the import matcher (pass-4 review fix): two batch
+  // entries sharing a code (legal via pass-2 grandfathering) make a code-keyed
+  // row unattributable. The worksheet path has no mapping UI, so a sheet that
+  // references such a code falls back to manual entry instead of guessing.
+  const wsCodeCounts = new Map<string, number>();
+  for (const e of batch.qc) {
+    const code = (mockDb.qcMaterials.get(e.materialId)?.code ?? "").toLowerCase();
+    wsCodeCounts.set(code, (wsCodeCounts.get(code) ?? 0) + 1);
+  }
   const qcByCode = new Map(
     batch.qc.map((e) => [(mockDb.qcMaterials.get(e.materialId)?.code ?? "").toLowerCase(), e.materialId] as const),
   );
@@ -3008,6 +3084,12 @@ function parseWorksheetEntries(
     }
     const cells = rawCells.map((c) => c.trim());
     const rowId = cells[0]?.toLowerCase() ?? "";
+    if (!sampleIds.has(rowId) && (wsCodeCounts.get(rowId) ?? 0) > 1) {
+      // A colliding code cannot be attributed (see wsCodeCounts above).
+      return {
+        error: `No readable Results sheet mapping: QC code "${cells[0]}" is carried by two entries of this batch — enter those values manually (or per entry via paste), where the intended lot can be chosen.`,
+      };
+    }
     const target: ResultTarget | null = sampleIds.has(rowId)
       ? { targetType: "sample", targetId: sampleIds.get(rowId)! }
       : qcByCode.has(rowId)
@@ -3061,7 +3143,15 @@ function previewEntries(batch: MockBatch, pinned: MethodVersion, entries: BulkEn
       pinned.analytes.find((a) => a.id === entry.analyteId)?.loq ?? null,
     );
     if ("error" in validated) return { ...base, outcome: { kind: "rejected" as const, message: validated.error } };
-    return { ...base, outcome: { kind: "accepted" as const, display: resultDisplay(validated.value) } };
+    // The VALIDATED value rides the verdict (pass-4 review fix): the staged
+    // preview→confirm comparison must catch a value re-interpreted to a
+    // different KIND with the same display (numeric "12" vs a qualifier
+    // named "12"), and the confirm writes exactly this value — never a
+    // re-derivation against live settings.
+    return {
+      ...base,
+      outcome: { kind: "accepted" as const, display: resultDisplay(validated.value), value: validated.value },
+    };
   });
 }
 
