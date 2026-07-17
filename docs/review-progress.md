@@ -9,8 +9,10 @@ order, conventions) and `docs/decision-log.md` (every design decision, dated, wi
 
 - **Model: Fable 5 only.** If a turn is ever routed to another model, **stop** — do not continue the
   work on another model. (Ramazan's standing rule.)
-- **Git is Ramazan's.** Never run git write commands. After each task, report the list of changed
-  files so he can commit.
+- **Git: Claude commits on request** (updated 17 Jul 2026; previously git was Ramazan's alone).
+  Ramazan asks for a commit per chunk of work; Claude runs it directly with a descriptive English
+  message and the `Co-Authored-By: Claude Fable 5 <noreply@anthropic.com>` trailer. Never push
+  unasked.
 - **Comment every change** with a short inline note saying *what* changed and *why*, so Steven (the
   backend dev partner) and future readers can follow it.
 - **Keep a running changelog.** At the end of the review, produce `docs/review-changes.md` listing

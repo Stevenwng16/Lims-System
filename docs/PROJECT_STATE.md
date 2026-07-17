@@ -151,7 +151,7 @@ The root cause: `docs/stories/` and `docs/00-INDEX.md` are **frozen Notion expor
 
 | Doc location | Stale claim (as written) | Reality (as built) | Amendment drafted? |
 |---|---|---|---|
-| `docs/build-report.md` (4 Jul) | "Not started at all: US-B1…US-D6 (15 of 20 stories)"; no audit log; provisioning creates no admin account | **All 20 stories built** and reviewed (passes 2–4, 6–13 Jul); platform audit log exists; provisioning creates the first admin | n/a — **rewrite or delete the report; this file supersedes it** |
+| `docs/build-report.md` (4 Jul) | "Not started at all: US-B1…US-D6 (15 of 20 stories)"; no audit log; provisioning creates no admin account | **All 20 stories built** and reviewed (passes 2–4, 6–13 Jul); platform audit log exists; provisioning creates the first admin | ✅ replaced with a supersession pointer to this file (17 Jul) |
 | `docs/00-INDEX.md` (2 Jul) | "all 20 stories frozen" statuses | Predates every 13 Jul amendment | n/a — regenerate on re-export |
 | US-A3 AC 4 + authorization note | switcher offers only **assigned** labs; single-lab users see name only | Admins: "All labs" default + every active lab | ✅ Decision B |
 | US-A4 AC 7 | "each user is assigned to one or more labs" | Lab-scoped roles only; **Admin is org-scoped** | ✅ (clarification) |
@@ -159,19 +159,19 @@ The root cause: `docs/stories/` and `docs/00-INDEX.md` are **frozen Notion expor
 | US-A5 AC 6, AC 3 | jobs linked to a lab; job identifiers embed the lab code | Jobs org-wide; only **batch** numbers carry the lab code | ✅ Decision A |
 | US-A6 AC 2 | new user requires ≥1 lab assignment | Not required for Admin role | ✅ Decision B |
 | US-A7 AC 3 | job sequences per org **and per lab**; default `{LAB}{YY}-…` → "MAIN26-00001" | Job sequences per org+period; default `J{YY}-{SEQ:00000}`; `{LAB}` rejected in job/sample formats, **required** in batch format | ✅ Decision A |
-| US-A7 AC 9c / US-D4 AC 3 | qualifier list "default contains 'n.b.'" | All org-specific lists start **empty** at provisioning | ⚠️ only US-B3 AC 2 + US-A2 AC 5 drafted — **qualifier default not covered** |
+| US-A7 AC 9c / US-D4 AC 3 | qualifier list "default contains 'n.b.'" | All org-specific lists start **empty** at provisioning | ✅ Decision F (drafted 17 Jul) |
 | US-B3 AC 2 | configurable type list "e.g. Balance, ICP-OES, pH meter" starter | Type list starts empty | ✅ Decision C |
 | US-C1 scope note, AC 1/2/3/14 + UI sketch | job belongs to exactly one lab; per-lab sequences; methods of the job's lab; Lab dropdown in the form | Org-wide jobs; org sequence; any active org method (labelled with its lab); no Lab field | ✅ Decision A |
-| **US-C3 AC 4** | "the lab is fixed at creation — the job number embeds the lab code and sequences run per lab" | Every clause obsolete (org-wide jobs) | ❌ **NOT in the amendment drafts — add it** |
+| **US-C3 AC 4** | "the lab is fixed at creation — the job number embeds the lab code and sequences run per lab" | Every clause obsolete (org-wide jobs) | ✅ Decision D (drafted 17 Jul) |
 | US-C2 AC 1 | overview "scoped to the active lab" | Jobs with work in the active lab; org-wide for admins/support | ✅ Decision A |
 | US-D1 AC 3 | eligible sample "belongs to the same lab as the batch" | Eligible = work routes to the batch's lab, from any job | ✅ Decision A |
-| **US-D2 AC 1** (story itself still "Ramazan's review pending") | "lists all batches of the active lab" | Admin "All labs" org-wide batch view exists | ❌ **NOT in the amendment drafts — add it** (and D2's review is still open) |
-| CLAUDE.md "Stack context" | "Azure stack… advice: Entra ID External ID… Azure SQL/PostgreSQL… Azure Blob" | Actual direction: Next.js + Supabase (chosen 3 Jul, currently parked); no Azure anywhere in the code | ❌ update CLAUDE.md |
-| CLAUDE.md setup-flow wording / older comments | "the lab CODE is stamped into every job and batch identifier" | Batch identifiers only | ❌ update CLAUDE.md decision reference |
-| `docs/review-progress.md` working agreement | "Git is Ramazan's. Never run git write commands." | Since 13 Jul, Ramazan explicitly has Claude commit (co-authored commits `9ef885a`…`cfde982`) | ❌ update the agreement if the change is permanent |
+| **US-D2 AC 1** (story itself still "Ramazan's review pending") | "lists all batches of the active lab" | Admin "All labs" org-wide batch view exists | ✅ Decision E (drafted 17 Jul; D2's review is still open) |
+| CLAUDE.md "Stack context" | "Azure stack… advice: Entra ID External ID… Azure SQL/PostgreSQL… Azure Blob" | Actual direction: Next.js + Supabase (chosen 3 Jul, currently parked); no Azure anywhere in the code | ✅ rewritten 17 Jul (as-built stack, Supabase parked, batch-only lab code stated) |
+| "the lab CODE is stamped into every job and batch identifier" wording | appears in older code comments and story text | Batch identifiers only | ✅ verified 17 Jul: CLAUDE.md itself never claimed it; the batch-only fact is now explicit in its Stack context. Story text falls under Decisions A/D |
+| `docs/review-progress.md` working agreement | "Git is Ramazan's. Never run git write commands." | Since 13 Jul, Ramazan explicitly has Claude commit (co-authored commits `9ef885a`…`cfde982`) | ✅ agreement updated 17 Jul (Claude commits on request, co-authored) |
 | `docs/research/us-a1-auth-provider-options.md` + Supabase migrations | Supabase Auth chosen and schema written | Adapter inactive (env commented out); migrations predate org-wide jobs and the five-role matrix mapping is incomplete | note as "parked" |
 
-**For the story-writing session:** the drafted amendment texts in `docs/notion-amendments-2026-07-13.md` are ready to paste into Notion (Decisions A, B, C + changelog lines) — but extend them with **US-C3 AC 4**, **US-D2 AC 1** and the **"n.b." qualifier default** (US-A7 AC 9c / US-D4 AC 3), which this audit found uncovered. New stories for epics E/F/G can build on the hooks listed at the end of §5.
+**For the story-writing session:** the drafted amendment texts in `docs/notion-amendments-2026-07-13.md` are ready to paste into Notion — Decisions A–F plus changelog lines (D/E/F close the coverage gaps this audit found: US-C3 AC 4, US-D2 AC 1, the "n.b." qualifier default). The 16 open design decisions are triage-ready in `docs/open-decisions.md`. New stories for epics E/F/G can build on the hooks listed at the end of §5.
 
 ---
 

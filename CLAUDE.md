@@ -35,9 +35,9 @@ Core promise: a lab sells provably reliable measurements — every design choice
 - Document order in `docs/stories/` is by ID; **build order is the list above** (each story's status line names its phase). B2/B3 deliberately build after epic C; D2 after D4.
 - Epics B4, E (QC evaluation, nonconforming work, audit-trail UI), F (reports/CoA, §7.8.8 amendments) and G (dashboards) are **out of scope until phases 1–3 ship** — hooks for them exist in the stories; build the hooks, not the epics.
 
-## Stack context (non-binding advice already in the stories)
+## Stack context (as built — see docs/PROJECT_STATE.md for the full snapshot)
 
-Azure stack. Open choices live in the Developer decisions blocks: auth provider (advice: Entra ID External ID — SSO-ready per US-A1 AC 12), tenant-isolation mechanism + DB flavour (advice: shared DB + `organisation_id` + row-level security; Azure SQL and Azure Database for PostgreSQL both support RLS), subdomain vs path routing, SPA vs server-rendered, file storage (advice: Azure Blob — immutability + versioning fit ADR-3), measurement-record event structure, import parser approach.
+Next.js 16 (App Router) + React 19 + TypeScript. **All domain logic sits behind swap-point interfaces** (`lib/<area>/types.ts` defines the Api, `lib/<area>/mock.ts` implements it against the in-memory store `lib/mock-db.ts`, `lib/<area>/index.ts` is the adapter switch) — the real backend replaces the mocks behind the same interfaces. Auth provider: **Supabase Auth chosen 3 Jul 2026 but currently parked** — the adapter activates only when `NEXT_PUBLIC_SUPABASE_URL` is set (commented out in `.env.local`), and the migrations in `lims-supabase/` are stale (they predate org-wide jobs and map only two DB roles against the app's five-role matrix). Remaining backend choices (DB flavour, RLS mechanism, file storage, measurement-record event structure) stay open until the partner backend spec lands; the frames in `docs/architecture-kaders.md` bound them. Identifier note: the lab code appears in **batch** identifiers only — jobs are organisation-wide (13 Jul 2026) and job/sample numbers carry no lab code.
 
 ## Hard "never" list
 

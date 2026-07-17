@@ -92,6 +92,57 @@ defaults" (US-A2 AC 5) = empty for org-specific lists; structural settings
   starter list (Balance / pH meter / Thermometer) is dropped. Types are
   added on the Equipment page as before.
 
+## Decision D — US-C3 AC 4 rewritten (follow-through of Decision A)
+
+**Rationale:** AC 4 as frozen reads "the lab is fixed at creation — the job
+number embeds the lab code and sequences run per lab (US-A7), so moving a job
+between labs is not possible; register anew and void the original instead."
+Under Decision A every clause is obsolete: a job has no lab, job numbers carry
+no lab code, and job sequences run per organisation. The immutability intent
+survives; the lab clauses do not. (Coverage gap found in the 17 Jul 2026 doc
+audit — see docs/PROJECT_STATE.md §8.)
+
+### US-C3 (job detail & edit) — AC 4
+- **Replace** with — "The job number and every issued sample ID are fixed at
+  creation and never change or get reissued (US-C1 AC 2). A job carries no
+  lab: the lab(s) involved are derived from its requested methods, so work
+  moves between labs only by editing the requested methods (an audited edit).
+  Register anew and void the original only when the order itself was
+  registered in error."
+
+## Decision E — US-D2 AC 1 gains the org-wide admin view (follow-through of Decision B)
+
+**Rationale:** admins carry no lab assignments; their default shell context is
+"All labs", and the batch work queue renders organisation-wide in that context
+(as it already does for a vendor support session). Working a batch still
+happens in a concrete lab. Note: US-D2's story status is still "Ramazan's
+review pending" — fold this amendment into that review. (Coverage gap found in
+the 17 Jul 2026 doc audit.)
+
+### US-D2 (work queue) — AC 1
+- **Amend** — "The queue lists the batches of the active lab. An admin's
+  'All labs' view and a vendor support session render the queue
+  organisation-wide. Working a batch (claiming, advancing steps, entering
+  results) always happens in a concrete lab context, and batch creation
+  requires picking a lab."
+
+## Decision F — the result-qualifier list also starts empty (completes Decision C)
+
+**Rationale:** Decision C covered sample types and equipment types; the
+result-qualifier list is the same class of org-specific taxonomy, so its
+"n.b." default is dropped too. The demo dataset seeds its own qualifier as
+data. (Coverage gap found in the 17 Jul 2026 doc audit.)
+
+### US-A7 (settings) — AC 9c
+- **Amend** — the configurable result-qualifier list starts **empty** at
+  provisioning (the "n.b." default entry is dropped); the admin defines the
+  organisation's qualifiers under Settings ▸ Result qualifiers.
+
+### US-D4 (result entry) — AC 3
+- **Amend** — the qualifier picker offers the organisation's configured
+  qualifiers (alongside the fixed `<` and `>` censored forms); no default
+  entry is promised.
+
 ## Changelog lines (for the Notion changelog)
 
 - 13 Jul 2026 — Jobs made organisation-wide (one order = one number; methods
@@ -103,3 +154,14 @@ defaults" (US-A2 AC 5) = empty for org-specific lists; structural settings
 - 13 Jul 2026 — Org-specific lists (sample types, result qualifiers,
   equipment types) start empty at provisioning. US-A2 AC 5 clarified,
   US-B3 AC 2 amended. Decided by Ramazan.
+- 13 Jul 2026 — US-C3 AC 4 rewritten: jobs are organisation-wide, so no lab
+  is fixed at creation and job numbers carry no lab code; ID immutability
+  unchanged. (Follow-through of the org-wide-jobs decision; coverage gap
+  closed 17 Jul 2026.)
+- 13 Jul 2026 — US-D2 AC 1 amended: the work queue renders organisation-wide
+  for an admin's "All labs" view and vendor support sessions, alongside the
+  active-lab view. (Follow-through of the org-wide-admins decision; coverage
+  gap closed 17 Jul 2026.)
+- 13 Jul 2026 — US-A7 AC 9c and US-D4 AC 3 amended: the result-qualifier
+  list starts empty at provisioning, no "n.b." default. (Completes the
+  empty-lists decision; coverage gap closed 17 Jul 2026.)
