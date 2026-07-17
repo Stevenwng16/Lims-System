@@ -4,6 +4,7 @@ import { cookies } from "next/headers";
 import { redirect } from "next/navigation";
 import { authApi } from "@/lib/auth";
 import { createSupabaseServerClient } from "@/lib/supabase/server";
+import { passwordPolicyError } from "@/lib/auth/password";
 import { encodeSession, SESSION_COOKIE, sessionCookieOptions } from "@/lib/auth/session";
 import { sessionTtlMsFor } from "@/lib/auth/ttl";
 import { decodeSupportSession, SUPPORT_COOKIE } from "@/lib/platform/support-session";
@@ -96,11 +97,15 @@ export async function resetPasswordAction(
   const token = String(formData.get("token") ?? "");
   const password = String(formData.get("password") ?? "");
   const confirm = String(formData.get("confirm") ?? "");
-  const { minLength } = await authApi.passwordPolicy();
+  const { minLength, requireComplexity } = await authApi.passwordPolicy();
 
-  if (password.length < minLength) {
-    return { error: `Password must be at least ${minLength} characters.` };
-  }
+  // Friendly pre-check; the auth backend re-validates the same policy
+  // (invariant 4 — requireComplexity wired 17 Jul 2026).
+  const policyError = passwordPolicyError(password, {
+    minPasswordLength: minLength,
+    requireComplexity,
+  });
+  if (policyError) return { error: policyError };
   if (password !== confirm) return { error: "Passwords do not match." };
 
   const result = await authApi.resetPassword(token, password);

@@ -1,5 +1,6 @@
 import type { SupabaseClient, User } from "@supabase/supabase-js";
 import { createSupabaseServerClient } from "@/lib/supabase/server";
+import { passwordPolicyError } from "./password";
 import type { AuthApi, LoginResult, MfaResult, ResetResult, SessionUser, UserRole } from "./types";
 
 // Real auth backend against the Supabase project in lims-supabase/
@@ -113,6 +114,17 @@ export const supabaseAuthApi: AuthApi = {
   },
 
   async resetPassword(token, newPassword): Promise<ResetResult> {
+    // Same policy gate as the mock (US-A1 AC 4 — requireComplexity wired
+    // 17 Jul 2026); the DB-side policy re-validates when this adapter goes
+    // live with tenant-scoped settings.
+    if (
+      passwordPolicyError(newPassword, {
+        minPasswordLength: DEFAULT_MIN_PASSWORD_LENGTH,
+        requireComplexity: true,
+      }) !== null
+    ) {
+      return { status: "invalid_token" };
+    }
     const supabase = await createSupabaseServerClient();
     const { error: otpError } = await supabase.auth.verifyOtp({
       type: "recovery",
@@ -126,10 +138,11 @@ export const supabaseAuthApi: AuthApi = {
     return { status: "success" };
   },
 
-  async passwordPolicy(): Promise<{ minLength: number }> {
+  async passwordPolicy(): Promise<{ minLength: number; requireComplexity: boolean }> {
     // Shown pre-login, so no org context yet; org_settings re-validates
     // server-side once tenant-scoped policy reads are needed (AC 4).
-    return { minLength: DEFAULT_MIN_PASSWORD_LENGTH };
+    // Complexity mirrors the provisioning default (safe default = on).
+    return { minLength: DEFAULT_MIN_PASSWORD_LENGTH, requireComplexity: true };
   },
 
   async validateSession(sessionUser) {

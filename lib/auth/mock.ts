@@ -1,4 +1,5 @@
 import { DEMO_PASSWORD, defaultOrgSettings, getOrgSettings, mockDb } from "@/lib/mock-db";
+import { passwordPolicyError } from "./password";
 import type { AuthApi, LoginResult, MfaResult, ResetResult, SessionUser } from "./types";
 import type { MockUser } from "@/lib/mock-db";
 
@@ -108,7 +109,11 @@ export const mockAuthApi: AuthApi = {
   },
 
   async resetPassword(token, newPassword): Promise<ResetResult> {
-    if (token !== DEMO_RESET_TOKEN || newPassword.length < securityPolicy(undefined).minPasswordLength) {
+    // Full policy check server-side (US-A1 AC 4 — requireComplexity wired
+    // 17 Jul 2026): min length AND, when configured, 3-of-4 character
+    // classes. The action pre-validates for a friendly message; this is the
+    // enforcement (invariant 4).
+    if (token !== DEMO_RESET_TOKEN || passwordPolicyError(newPassword, securityPolicy(undefined)) !== null) {
       return { status: "invalid_token" };
     }
     for (const user of mockDb.users.values()) {
@@ -124,7 +129,8 @@ export const mockAuthApi: AuthApi = {
   async passwordPolicy() {
     // Mock: the reset token carries no org binding, so use the demo org's
     // policy. The real backend resolves the policy from the token's account.
-    return { minLength: securityPolicy(undefined).minPasswordLength };
+    const policy = securityPolicy(undefined);
+    return { minLength: policy.minPasswordLength, requireComplexity: policy.requireComplexity };
   },
 
   async validateSession(sessionUser) {

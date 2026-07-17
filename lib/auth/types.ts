@@ -44,7 +44,7 @@ export interface AuthApi {
   requestPasswordReset(email: string): Promise<void>;
   resetPassword(token: string, newPassword: string): Promise<ResetResult>;
   /** Org password policy shown/enforced client-side; server re-validates (AC 4). */
-  passwordPolicy(): Promise<{ minLength: number }>;
+  passwordPolicy(): Promise<{ minLength: number; requireComplexity: boolean }>;
   /**
    * Re-validate a session's account against the LIVE store on every request:
    * a demoted / deactivated / locked user takes effect immediately, not only
