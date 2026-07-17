@@ -1,11 +1,10 @@
 "use client";
 
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useState, useTransition } from "react";
 import { useActionState } from "react";
 import type { ImportPreviewRow, ResultsGrid } from "@/lib/batches";
 import { confirmImportAction, previewImportAction, type ImportFormState } from "../actions";
 import { Alert, AlertDescription } from "@/components/ui/alert";
-import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import {
   Dialog,
@@ -62,25 +61,34 @@ export function ImportDialog({
   configs: ImportConfigOption[];
   onDone: () => void;
 }) {
-  const [previewState, previewSubmit, previewPending] = useActionState(previewImportAction, initialState);
+  const [previewState, setPreviewState] = useState<ImportFormState>(initialState);
+  const [previewPending, startPreviewTransition] = useTransition();
   const [confirmState, confirmSubmit, confirmPending] = useActionState(confirmImportAction, initialState);
   const [configId, setConfigId] = useState(configs[0]?.id ?? "");
   const [resolutions, setResolutions] = useState<Map<number, Resolution>>(new Map());
   const [replaceAll, setReplaceAll] = useState(false);
   const [replaceCells, setReplaceCells] = useState<Set<string>>(new Set()); // `${row}:${analyte}`
 
+  // Resolutions reset in the action callback when a NEW preview lands (was an
+  // effect keyed on the token — the set-state-in-effect lint rule; behaviour
+  // unchanged, 17 Jul 2026): every fresh preview starts with a clean map.
+  const previewSubmit = (formData: FormData) => {
+    startPreviewTransition(async () => {
+      const result = await previewImportAction(previewState, formData);
+      setPreviewState(result);
+      if (result.preview) {
+        setResolutions(new Map());
+        setReplaceAll(false);
+        setReplaceCells(new Set());
+      }
+    });
+  };
+
   useEffect(() => {
     if (confirmState.success) onDone();
   }, [confirmState, onDone]);
 
   const preview = previewState.preview ?? null;
-
-  // Reset resolutions whenever a new preview lands.
-  useEffect(() => {
-    setResolutions(new Map());
-    setReplaceAll(false);
-    setReplaceCells(new Set());
-  }, [preview?.token]);
 
   const targetOptions = useMemo(
     () =>

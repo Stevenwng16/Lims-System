@@ -1,7 +1,6 @@
 "use client";
 
-import { useEffect, useState } from "react";
-import { useActionState } from "react";
+import { useState, useTransition } from "react";
 import { provisionOrganisationAction, type PlatformFormState } from "./actions";
 import { Alert, AlertDescription } from "@/components/ui/alert";
 import { Button } from "@/components/ui/button";
@@ -20,11 +19,17 @@ const initialState: PlatformFormState = {};
 
 export function ProvisionDialog() {
   const [open, setOpen] = useState(false);
-  const [state, submit, pending] = useActionState(provisionOrganisationAction, initialState);
-
-  useEffect(() => {
-    if (state.success) setOpen(false);
-  }, [state]);
+  const [state, setState] = useState<PlatformFormState>(initialState);
+  const [pending, startTransition] = useTransition();
+  // Close-on-success runs in the action callback, not an effect (the
+  // set-state-in-effect lint rule; behaviour unchanged — 17 Jul 2026).
+  const submit = (formData: FormData) => {
+    startTransition(async () => {
+      const result = await provisionOrganisationAction(state, formData);
+      setState(result);
+      if (result.success) setOpen(false);
+    });
+  };
 
   return (
     <Dialog open={open} onOpenChange={setOpen}>

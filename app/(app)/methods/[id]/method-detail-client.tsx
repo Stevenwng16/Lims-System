@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useState, useTransition } from "react";
 import { useActionState } from "react";
 import type { TemplateVersion } from "@/lib/mock-db";
 import { replaceTemplateAction, setMethodStatusAction, type MethodFormState } from "../actions";
@@ -30,12 +30,18 @@ export function MethodStatusForm({
   status: "active" | "inactive";
 }) {
   const [open, setOpen] = useState(false);
-  const [state, submit, pending] = useActionState(setMethodStatusAction, initialState);
+  const [state, setState] = useState<MethodFormState>(initialState);
+  const [pending, startTransition] = useTransition();
   const deactivating = status === "active";
-
-  useEffect(() => {
-    if (state.success) setOpen(false);
-  }, [state]);
+  // Close-on-success runs in the action callback, not an effect (the
+  // set-state-in-effect lint rule; behaviour unchanged — 17 Jul 2026).
+  const submit = (formData: FormData) => {
+    startTransition(async () => {
+      const result = await setMethodStatusAction(state, formData);
+      setState(result);
+      if (result.success) setOpen(false);
+    });
+  };
 
   return (
     <Dialog open={open} onOpenChange={setOpen}>

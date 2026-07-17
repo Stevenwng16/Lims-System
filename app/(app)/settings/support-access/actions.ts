@@ -52,10 +52,9 @@ export async function grantSupportAccessAction(
   return { success: true };
 }
 
-export async function revokeSupportAccessAction(
-  _prev: SupportAccessFormState,
-  _formData: FormData,
-): Promise<SupportAccessFormState> {
+// Takes no arguments on purpose: useActionState still passes (prev, formData),
+// but a narrower signature is assignable and keeps the unused-vars lint clean.
+export async function revokeSupportAccessAction(): Promise<SupportAccessFormState> {
   const orgId = await requireOrgAdmin();
   const result = await platformApi.revokeSupportAccess(orgId);
   if (result.status === "error") return { error: result.message };

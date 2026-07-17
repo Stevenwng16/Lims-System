@@ -1,7 +1,7 @@
 import { describe, expect, test } from "vitest";
 import { methodApi } from "@/lib/methods";
 import { batchApi } from "@/lib/batches";
-import { currentMethodVersion, mockDb } from "@/lib/mock-db";
+import { currentMethodVersion } from "@/lib/mock-db";
 import { addSampleType, makeAcceptedJob, makeBatch, makeLab, makeMethod, makeOrg, snapshot } from "../helpers";
 
 // Invariant 3 + ADR-2: used masterdata versions instead of overwriting;

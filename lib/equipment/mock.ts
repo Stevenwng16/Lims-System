@@ -13,7 +13,6 @@ import {
 import { SIGNED_DECIMAL, UNSIGNED_DECIMAL, withinTolerance } from "./decimal";
 import type {
   Availability,
-  CalibrationInput,
   CalibrationState,
   CheckTypeInput,
   CheckTypeView,
@@ -24,7 +23,6 @@ import type {
   EquipmentDetail,
   EquipmentInput,
   EquipmentListItem,
-  LogCheckInput,
   MethodLinkView,
 } from "./types";
 

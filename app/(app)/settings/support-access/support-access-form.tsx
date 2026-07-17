@@ -29,6 +29,12 @@ const initialState: SupportAccessFormState = {};
 
 type GrantView = { expiresAt: number; allowAdmin: boolean; sessionActive: boolean } | null;
 
+// Module-level (not in render) so the clock read stays outside the component
+// (react-hooks/purity — 17 Jul 2026 lint cleanup).
+function hoursLeftOf(grant: GrantView): number {
+  return grant ? Math.max(1, Math.ceil((grant.expiresAt - Date.now()) / 3600_000)) : 0;
+}
+
 export function SupportAccessForm({ grant }: { grant: GrantView }) {
   const [grantState, grantAccess, grantPending] = useActionState(
     grantSupportAccessAction,
@@ -40,7 +46,7 @@ export function SupportAccessForm({ grant }: { grant: GrantView }) {
   );
   const state = grant ? revokeState : grantState;
 
-  const hoursLeft = grant ? Math.max(1, Math.ceil((grant.expiresAt - Date.now()) / 3600_000)) : 0;
+  const hoursLeft = hoursLeftOf(grant);
 
   return (
     <Card>

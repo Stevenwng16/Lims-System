@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useEffect, useState, useTransition } from "react";
 import { useActionState } from "react";
 import { useRouter } from "next/navigation";
 import type { Availability, EquipmentListItem } from "@/lib/equipment";
@@ -230,13 +230,19 @@ export function EquipmentDialog({
 // One row of the type manager: rename + retire/reactivate, each its own form.
 function TypeRow({ type }: { type: TypeOption }) {
   const [renameState, renameSubmit, renamePending] = useActionState(renameTypeAction, initialState);
-  const [statusState, statusSubmit, statusPending] = useActionState(setTypeStatusAction, initialState);
+  const [statusState, setStatusState] = useState<EquipmentFormState>(initialState);
+  const [statusPending, startStatusTransition] = useTransition();
   const [showReason, setShowReason] = useState(false);
   const nextStatus = type.status === "active" ? "inactive" : "active";
-
-  useEffect(() => {
-    if (statusState.success) setShowReason(false);
-  }, [statusState]);
+  // Collapse-on-success runs in the action callback, not an effect (the
+  // set-state-in-effect lint rule; behaviour unchanged — 17 Jul 2026).
+  const statusSubmit = (formData: FormData) => {
+    startStatusTransition(async () => {
+      const result = await setTypeStatusAction(statusState, formData);
+      setStatusState(result);
+      if (result.success) setShowReason(false);
+    });
+  };
 
   return (
     <div className="space-y-2 border-b pb-3 last:border-b-0">

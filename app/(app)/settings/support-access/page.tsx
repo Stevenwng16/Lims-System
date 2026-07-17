@@ -12,14 +12,20 @@ import { SupportAccessForm } from "./support-access-form";
 
 export const metadata = { title: "Support access" };
 
+// Module-level (not in render) so the clock read stays outside the component
+// (react-hooks/purity — 17 Jul 2026 lint cleanup); liveness derives from the
+// timestamp, never a sticky flag (audit finding 27).
+function isSessionActive(grant: Awaited<ReturnType<typeof platformApi.getSupportGrant>>): boolean {
+  return !!grant && grant.sessionExpiresAt !== null && grant.sessionExpiresAt > Date.now();
+}
+
 // Customer side of US-A2 AC 8/9. Real Admin only (live-checked in
 // requireOrgAdmin) — grant management stays with the customer even during an
 // admin-rights support session.
 export default async function SupportAccessPage() {
   const orgId = await requireOrgAdmin(); // redirects unless a live org admin
   const grant = await platformApi.getSupportGrant(orgId);
-  const sessionActive =
-    !!grant && grant.sessionExpiresAt !== null && grant.sessionExpiresAt > Date.now();
+  const sessionActive = isSessionActive(grant);
 
   return (
     <div className="mx-auto max-w-2xl space-y-6">

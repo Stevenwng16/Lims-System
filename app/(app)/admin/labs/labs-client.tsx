@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useEffect, useState, useTransition } from "react";
 import { useActionState } from "react";
 import type { LabSummary } from "@/lib/labs";
 import { createLabAction, updateLabAction, type LabFormState } from "./actions";
@@ -31,11 +31,17 @@ const initialState: LabFormState = {};
 
 function NewLabDialog() {
   const [open, setOpen] = useState(false);
-  const [state, submit, pending] = useActionState(createLabAction, initialState);
-
-  useEffect(() => {
-    if (state.success) setOpen(false);
-  }, [state]);
+  const [state, setState] = useState<LabFormState>(initialState);
+  const [pending, startTransition] = useTransition();
+  // Close-on-success runs in the action callback, not an effect (the
+  // set-state-in-effect lint rule; behaviour unchanged — 17 Jul 2026).
+  const submit = (formData: FormData) => {
+    startTransition(async () => {
+      const result = await createLabAction(state, formData);
+      setState(result);
+      if (result.success) setOpen(false);
+    });
+  };
 
   return (
     <Dialog open={open} onOpenChange={setOpen}>
