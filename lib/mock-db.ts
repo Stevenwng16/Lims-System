@@ -1927,9 +1927,15 @@ function cleanDb(): MockDb {
 // the platform-level audit log of US-A2 AC 3.) The cache key carries the
 // seed MODE so flipping LIMS_CLEAN_SEED can never serve the other mode's
 // store.
+// DEV KNOB: bump SEED_RESET (any change) to wipe the running dev server's
+// in-memory state and reseed from scratch on the next page load — the store
+// key changes, so the old globalThis entry is simply abandoned. No restart
+// needed; restarting the dev server has the same effect. Purely a mock/dev
+// convenience — the real backend has no such operation (never-delete).
+const SEED_RESET = 1;
 const CLEAN_SEED = process.env.LIMS_CLEAN_SEED === "1";
 export const mockDb: MockDb = ((globalThis as Record<string, unknown>)[
-  CLEAN_SEED ? "__limsMockDbV28Clean" : "__limsMockDbV28"
+  `__limsMockDbV28r${SEED_RESET}${CLEAN_SEED ? "Clean" : ""}`
 ] ??= CLEAN_SEED ? cleanDb() : seedDb()) as MockDb;
 
 export function getOrgSettings(orgId: string): OrgSettings {
