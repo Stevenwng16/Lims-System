@@ -92,6 +92,10 @@ function SecuritySection({ security }: { security: OrgSettings["security"] }) {
                 defaultValue={security.sessionTimeoutMinutes}
                 className="w-24"
               />
+              <p className="text-xs text-muted-foreground">
+                Applies from each user&apos;s next login — running sessions keep their current
+                timeout until then.
+              </p>
             </div>
           </div>
           <label className="flex items-center gap-2 text-sm">

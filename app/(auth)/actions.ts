@@ -5,6 +5,7 @@ import { redirect } from "next/navigation";
 import { authApi } from "@/lib/auth";
 import { createSupabaseServerClient } from "@/lib/supabase/server";
 import { encodeSession, SESSION_COOKIE, sessionCookieOptions } from "@/lib/auth/session";
+import { sessionTtlMsFor } from "@/lib/auth/ttl";
 import { decodeSupportSession, SUPPORT_COOKIE } from "@/lib/platform/support-session";
 import { platformApi } from "@/lib/platform";
 import type { SessionUser } from "@/lib/auth";
@@ -27,7 +28,11 @@ async function clearSupportCookie(): Promise<void> {
 async function startSession(user: SessionUser): Promise<never> {
   await clearSupportCookie();
   const cookieStore = await cookies();
-  cookieStore.set(SESSION_COOKIE, encodeSession(user), sessionCookieOptions);
+  // Per-org inactivity timeout (US-A7, wired 17 Jul 2026): resolved here at
+  // login and embedded in the payload; proxy.ts re-uses it on every sliding
+  // renewal. A changed setting applies from the user's next login.
+  const ttlMs = sessionTtlMsFor(user);
+  cookieStore.set(SESSION_COOKIE, encodeSession(user, ttlMs), sessionCookieOptions(ttlMs));
   redirect("/");
 }
 

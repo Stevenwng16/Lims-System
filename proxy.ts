@@ -38,8 +38,14 @@ export function proxy(request: NextRequest) {
 
   const response = NextResponse.next();
   if (session) {
-    // Sliding inactivity window (AC 8): re-issue the cookie on every request.
-    response.cookies.set(SESSION_COOKIE, encodeSession(session.user), sessionCookieOptions);
+    // Sliding inactivity window (AC 8): re-issue the cookie on every request,
+    // re-using the per-org TTL embedded at login (the middleware cannot read
+    // org settings — see lib/auth/ttl.ts).
+    response.cookies.set(
+      SESSION_COOKIE,
+      encodeSession(session.user, session.ttlMs),
+      sessionCookieOptions(session.ttlMs),
+    );
   }
   return response;
 }
