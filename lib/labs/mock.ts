@@ -1,6 +1,18 @@
 import { currentMethodVersion, mockDb, type MockLab } from "@/lib/mock-db";
 import type { LabActionResult, LabApi, LabInput, LabSummary } from "./types";
 
+/** Append one audit event to the lab (invariants 1+6 — 17 Jul 2026 gap
+ * closure: status and masterdata changes previously left no trace, actor and
+ * timestamp were lost). Same append-only convention as jobs/users/equipment. */
+function addLabEvent(lab: MockLab, actorEmail: string, summary: string): void {
+  lab.events.push({
+    id: `labev-${crypto.randomUUID()}`,
+    at: new Date().toISOString(),
+    by: actorEmail,
+    summary,
+  });
+}
+
 function orgLabs(orgId: string): MockLab[] {
   return [...mockDb.labs.values()].filter((lab) => lab.orgId === orgId);
 }
@@ -76,7 +88,9 @@ export const mockLabApi: LabApi = {
       hasActiveWork: false,
       analystsMayCreateBatches: false,
       reviewerMustDiffer: false,
+      events: [],
     });
+    addLabEvent(mockDb.labs.get(id)!, actorEmail, `Lab created (name "${name}", code ${code})`);
     // The first lab of a setup-pending organisation completes setup (US-A2
     // AC 4; 13 Jul 2026 decision replacing the seeded default lab). No
     // creator assignment happens here (supersedes the same-day auto-assign
@@ -88,7 +102,7 @@ export const mockLabApi: LabApi = {
     return { status: "success" };
   },
 
-  async updateLab(orgId, labId, input): Promise<LabActionResult> {
+  async updateLab(orgId, labId, input, actorEmail): Promise<LabActionResult> {
     const lab = mockDb.labs.get(labId);
     if (!lab || lab.orgId !== orgId) return { status: "error", message: "Unknown lab." };
     const error = validateInput(orgId, input, labId);
@@ -107,9 +121,19 @@ export const mockLabApi: LabApi = {
         }
       }
     }
+    // Before→after diff FIRST (invariant 1), then apply — same convention as
+    // job edits; a no-op save appends nothing.
+    const changes: string[] = [];
+    const diff = (label: string, before: string, after: string) => {
+      if (before !== after) changes.push(`${label}: "${before}" → "${after}"`);
+    };
+    diff("name", oldName, newName);
+    diff("code", lab.code, input.code.trim().toUpperCase());
+    diff("description", lab.description, input.description.trim());
     lab.name = newName;
     lab.code = input.code.trim().toUpperCase();
     lab.description = input.description.trim();
+    if (changes.length > 0) addLabEvent(lab, actorEmail, `Lab edited: ${changes.join("; ")}`);
     return { status: "success" };
   },
 
@@ -154,13 +178,18 @@ export const mockLabApi: LabApi = {
     return { status: "success" };
   },
 
-  async setLabStatus(orgId, labId, status, reason): Promise<LabActionResult> {
+  async setLabStatus(orgId, labId, status, reason, actorEmail): Promise<LabActionResult> {
     const guard = await this.checkLabStatusChange(orgId, labId, status, reason);
     if (guard.status === "error") return guard;
     const lab = mockDb.labs.get(labId)!;
     if (lab.status === status) return { status: "success" };
     lab.status = status;
     lab.statusReason = reason.trim();
+    addLabEvent(
+      lab,
+      actorEmail,
+      `Lab ${status === "inactive" ? "deactivated" : "reactivated"} — ${reason.trim()}`,
+    );
     return { status: "success" };
   },
 };

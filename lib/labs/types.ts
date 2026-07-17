@@ -28,8 +28,10 @@ export interface LabApi {
    * admin could never assign themself afterwards, since US-A6 AC 9 blocks
    * self-service on lab assignments (13 Jul 2026 decision). */
   createLab(orgId: string, input: LabInput, actorEmail: string): Promise<LabActionResult>;
-  /** AC 3: editing never rewrites codes already embedded in issued IDs. */
-  updateLab(orgId: string, labId: string, input: LabInput): Promise<LabActionResult>;
+  /** AC 3: editing never rewrites codes already embedded in issued IDs.
+   * `actorEmail` (resolved server-side) attributes the audit event —
+   * anonymous mutations are impossible (invariants 1+6). */
+  updateLab(orgId: string, labId: string, input: LabInput, actorEmail: string): Promise<LabActionResult>;
   /** Guard-only validation of a status change (no mutation) so a combined
    * Save can check it before committing field edits (audit finding 20). */
   checkLabStatusChange(
@@ -39,11 +41,13 @@ export interface LabApi {
     reason: string,
   ): Promise<LabActionResult>;
   /** AC 4/5/7: deactivate (never delete), blocked on active work / last active
-   * lab. A status CHANGE requires a reason (invariant 2; decision 4 Jul 2026). */
+   * lab. A status CHANGE requires a reason (invariant 2; decision 4 Jul 2026)
+   * and is recorded as an attributed audit event (invariants 1+6). */
   setLabStatus(
     orgId: string,
     labId: string,
     status: "active" | "inactive",
     reason: string,
+    actorEmail: string,
   ): Promise<LabActionResult>;
 }

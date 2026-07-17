@@ -46,6 +46,16 @@ export type MockPlatformEvent = {
   summary: string; // action + reason
 };
 
+// Append-only lab audit trail (invariants 1+6 — 17 Jul 2026 gap closure):
+// status/statusReason on the record is the CURRENT-state projection; the
+// reconstructable history (who/what/when, before→after on edits) lives here.
+export type MockLabEvent = {
+  id: string;
+  at: string; // ISO
+  by: string;
+  summary: string; // "field: old → new" on edits; reasons on status changes
+};
+
 export type MockLab = {
   id: string;
   orgId: string; // a lab belongs to exactly one organisation (invariant 5)
@@ -53,7 +63,8 @@ export type MockLab = {
   code: string; // short code used in IDs/labels; unique within the organisation
   description: string;
   status: "active" | "inactive";
-  statusReason?: string; // required on every status change (invariant 2)
+  statusReason?: string; // current-state mirror; history in events[] (invariant 2)
+  events: MockLabEvent[]; // append-only (see MockLabEvent)
   // Partly-mock flag: since US-D1 the deactivation guard ALSO checks real
   // open batches; this flag still stands in for other in-progress work until
   // the full workflow lands (US-D3/D6). Counts are computed live (US-B1/B3).
@@ -228,11 +239,23 @@ export type MethodVersion = {
   createdBy: string;
 };
 
+// Append-only method audit trail (invariants 1+6 — 17 Jul 2026 gap closure).
+// Complements the versions[] history: versions capture WHAT each version
+// prescribes; events capture every act (create, edit, version, status,
+// template) with actor + timestamp + before→after.
+export type MockMethodEvent = {
+  id: string;
+  at: string; // ISO
+  by: string;
+  summary: string;
+};
+
 export type MockMethod = {
   id: string;
   orgId: string;
   status: "active" | "inactive"; // deactivate, never delete (AC 10)
-  statusReason?: string; // required on every status change (invariant 2)
+  statusReason?: string; // current-state mirror; history in events[] (invariant 2)
+  events: MockMethodEvent[]; // append-only (see MockMethodEvent)
   usedByBatches: boolean; // set by real batch creation since US-D1 (drives AC 9 versioning)
   versions: MethodVersion[]; // append-only
   templates: TemplateVersion[]; // stored via the central attachment facility (ADR-3) — mocked here
@@ -607,8 +630,17 @@ export type MockQcMaterial = {
   description: string;
   expectedValues: QcExpectedValue[]; // empty for Blanks (below-limit, no numeric target)
   status: "active" | "inactive"; // deactivate, never delete (AC 8)
-  statusReason?: string; // required on every status change (invariant 2; decision 4 Jul 2026)
+  statusReason?: string; // current-state mirror; history in events[] (invariant 2)
   createdAt: string;
+  events: MockQcEvent[]; // append-only (17 Jul 2026 gap closure, invariants 1+6)
+};
+
+// Append-only QC-material audit trail — same shape as the other event lists.
+export type MockQcEvent = {
+  id: string;
+  at: string; // ISO
+  by: string;
+  summary: string; // "field: old → new" on edits; reasons on status changes
 };
 
 // Equipment (US-B3). A piece of equipment belongs to one lab within one
@@ -619,12 +651,21 @@ export type MockQcMaterial = {
 
 // Configurable per organisation (AC 2); managed by Admins. Deactivate, never
 // delete — equipment already of an inactive type keeps it (grandfathering).
+// Append-only equipment-type audit trail (17 Jul 2026 gap closure).
+export type MockEquipmentTypeEvent = {
+  id: string;
+  at: string; // ISO
+  by: string;
+  summary: string;
+};
+
 export type MockEquipmentType = {
   id: string;
   orgId: string;
   name: string;
   status: "active" | "inactive";
-  statusReason?: string; // required on every status change (invariant 2)
+  statusReason?: string; // current-state mirror; history in events[] (invariant 2)
+  events: MockEquipmentTypeEvent[]; // append-only (invariants 1+6)
 };
 
 export type EquipmentCalibration = {
@@ -931,6 +972,7 @@ function seedDb(): MockDb {
     hasActiveWork: true, // demo: deactivation is blocked (AC 5)
     analystsMayCreateBatches: false,
     reviewerMustDiffer: false,
+    events: [],
   });
   labs.set("lab-wat", {
     id: "lab-wat",
@@ -942,6 +984,7 @@ function seedDb(): MockDb {
     hasActiveWork: false, // demo: can be deactivated (and reactivated)
     analystsMayCreateBatches: false,
     reviewerMustDiffer: false,
+    events: [],
   });
   labs.set("lab-ext", {
     id: "lab-ext",
@@ -954,6 +997,7 @@ function seedDb(): MockDb {
     hasActiveWork: false,
     analystsMayCreateBatches: false,
     reviewerMustDiffer: false,
+    events: [],
   });
   // Seeded default labs of the other organisations (US-A5 AC 8).
   labs.set("lab-alpha-main", {
@@ -966,6 +1010,7 @@ function seedDb(): MockDb {
     hasActiveWork: false,
     analystsMayCreateBatches: false,
     reviewerMustDiffer: false,
+    events: [],
   });
   labs.set("lab-oldcust-main", {
     id: "lab-oldcust-main",
@@ -977,6 +1022,7 @@ function seedDb(): MockDb {
     hasActiveWork: false,
     analystsMayCreateBatches: false,
     reviewerMustDiffer: false,
+    events: [],
   });
 
   const orgSettings = new Map<string, OrgSettings>();
@@ -1016,6 +1062,7 @@ function seedDb(): MockDb {
     orgId: "org-demolab",
     status: "active",
     usedByBatches: true, // editing creates version 2 (AC 9 demo)
+    events: [],
     templates: [seededTemplate("ph_template.xlsx", false)],
     versions: [
       {
@@ -1039,6 +1086,7 @@ function seedDb(): MockDb {
     orgId: "org-demolab",
     status: "active",
     usedByBatches: true,
+    events: [],
     templates: [seededTemplate("icpms_metals_template.xlsx", true)],
     versions: [
       {
@@ -1076,6 +1124,7 @@ function seedDb(): MockDb {
     orgId: "org-demolab",
     status: "active",
     usedByBatches: false, // unused → edits stay version 1 (AC 9 demo)
+    events: [],
     templates: [seededTemplate("conductivity_template.xlsx", false)],
     versions: [
       {
@@ -1100,6 +1149,7 @@ function seedDb(): MockDb {
     id: "m-cl",
     orgId: "org-demolab",
     status: "inactive", // deactivated method; clearance records stay intact (AC 12)
+    events: [],
     statusReason: "Replaced by subcontracted analysis (mock seed)",
     usedByBatches: false,
     templates: [], // no template uploaded yet → visible warning in the UI
@@ -1144,6 +1194,7 @@ function seedDb(): MockDb {
     ],
     status: "active",
     createdAt: "12 May 2026",
+    events: [],
   });
   qcMaterials.set("qc-blk", {
     id: "qc-blk",
@@ -1160,6 +1211,7 @@ function seedDb(): MockDb {
     expectedValues: [], // below-limit vs the method's LOQ (epic E) — no numeric target
     status: "active",
     createdAt: "12 May 2026",
+    events: [],
   });
   qcMaterials.set("qc-crm1", {
     id: "qc-crm1",
@@ -1186,6 +1238,7 @@ function seedDb(): MockDb {
     ],
     status: "active",
     createdAt: "12 May 2026",
+    events: [],
   });
   qcMaterials.set("qc-cs2", {
     id: "qc-cs2",
@@ -1204,6 +1257,7 @@ function seedDb(): MockDb {
     ],
     status: "active",
     createdAt: "2 Jun 2026",
+    events: [],
   });
   qcMaterials.set("qc-cs1-old", {
     id: "qc-cs1-old",
@@ -1225,6 +1279,7 @@ function seedDb(): MockDb {
     status: "inactive",
     statusReason: "Lot expired; replaced by MM-2026-A (mock seed)",
     createdAt: "3 Nov 2025",
+    events: [],
   });
 
   // Seed equipment (US-B3). Check/calibration dates are partly DYNAMIC so the
@@ -1238,20 +1293,21 @@ function seedDb(): MockDb {
   const isoAt = (offsetDays: number, time: string) => `${isoDay(offsetDays)}T${time}`;
 
   const equipmentTypes = new Map<string, MockEquipmentType>();
-  equipmentTypes.set("eqt-bal", { id: "eqt-bal", orgId: "org-demolab", name: "Balance", status: "active" });
-  equipmentTypes.set("eqt-icp", { id: "eqt-icp", orgId: "org-demolab", name: "ICP-OES", status: "active" });
-  equipmentTypes.set("eqt-ph", { id: "eqt-ph", orgId: "org-demolab", name: "pH meter", status: "active" });
+  equipmentTypes.set("eqt-bal", { id: "eqt-bal", orgId: "org-demolab", name: "Balance", status: "active", events: [] });
+  equipmentTypes.set("eqt-icp", { id: "eqt-icp", orgId: "org-demolab", name: "ICP-OES", status: "active", events: [] });
+  equipmentTypes.set("eqt-ph", { id: "eqt-ph", orgId: "org-demolab", name: "pH meter", status: "active", events: [] });
   equipmentTypes.set("eqt-oven", {
     id: "eqt-oven",
     orgId: "org-demolab",
     name: "Muffle furnace",
     status: "inactive",
     statusReason: "Type list cleanup (mock seed) — existing furnace keeps it (grandfathered)",
+    events: [],
   });
   for (const orgId of ["org-labalpha", "org-oldcust"]) {
     for (const [i, name] of DEFAULT_EQUIPMENT_TYPES.entries()) {
       const id = `eqt-${orgId}-${i}`;
-      equipmentTypes.set(id, { id, orgId, name, status: "active" });
+      equipmentTypes.set(id, { id, orgId, name, status: "active", events: [] });
     }
   }
 
@@ -1920,10 +1976,9 @@ function cleanDb(): MockDb {
   };
 }
 
-// V28: fresh orgs start with EMPTY org-specific lists (13 Jul 2026) — sample
-// types, result qualifiers AND equipment types; the demo org seeds its own.
-// (V26: org-wide jobs — MockJob loses labId, job sequences run per
-// org+period, default jobFormat "J{YY}-{SEQ:00000}"; V25: platformAudit —
+// V29: append-only events[] on labs, methods, QC materials and equipment
+// types (invariants 1+6 gap closure, 17 Jul 2026). (V28: fresh orgs start
+// with EMPTY org-specific lists; V26: org-wide jobs; V25: platformAudit —
 // the platform-level audit log of US-A2 AC 3.) The cache key carries the
 // seed MODE so flipping LIMS_CLEAN_SEED can never serve the other mode's
 // store.
@@ -1935,7 +1990,7 @@ function cleanDb(): MockDb {
 const SEED_RESET = 1;
 const CLEAN_SEED = process.env.LIMS_CLEAN_SEED === "1";
 export const mockDb: MockDb = ((globalThis as Record<string, unknown>)[
-  `__limsMockDbV28r${SEED_RESET}${CLEAN_SEED ? "Clean" : ""}`
+  `__limsMockDbV29r${SEED_RESET}${CLEAN_SEED ? "Clean" : ""}`
 ] ??= CLEAN_SEED ? cleanDb() : seedDb()) as MockDb;
 
 export function getOrgSettings(orgId: string): OrgSettings {

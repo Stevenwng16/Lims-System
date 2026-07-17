@@ -34,6 +34,18 @@ function orgMaterials(orgId: string): MockQcMaterial[] {
   return [...mockDb.qcMaterials.values()].filter((m) => m.orgId === orgId);
 }
 
+/** Append one audit event to the material (invariants 1+6 — 17 Jul 2026 gap
+ * closure). Same append-only convention as jobs/users/equipment; batches keep
+ * their own frozen expectation snapshots regardless (US-B2 AC 7). */
+function addQcEvent(material: MockQcMaterial, actorEmail: string, summary: string): void {
+  material.events.push({
+    id: `qcev-${crypto.randomUUID()}`,
+    at: new Date().toISOString(),
+    by: actorEmail,
+    summary,
+  });
+}
+
 function canView(actor: QcActor, labId: string): boolean {
   if (actor.role === "admin" || actor.isSupport) return true;
   return actor.labs.includes(labNameById(labId));
@@ -211,9 +223,15 @@ export const mockQcApi: QcApi = {
       expectedValues: [],
       status: "active",
       createdAt: new Date().toLocaleDateString("en-GB", { day: "numeric", month: "short", year: "numeric" }),
+      events: [],
     };
     applyInput(material, input);
     mockDb.qcMaterials.set(id, material);
+    addQcEvent(
+      material,
+      actor.email,
+      `QC material created (name "${material.name}", code ${material.code}, type ${material.type})`,
+    );
     return { status: "success", materialId: id };
   },
 
@@ -229,9 +247,26 @@ export const mockQcApi: QcApi = {
     const error = validateInput(actor, input, materialId, material, targetStatus);
     if (error) return { status: "error", message: error };
     // Edits are allowed even after batch use (AC 7): the audit records
-    // before/after (backend), and epic D snapshots the values a batch was
+    // before/after below, and epic D snapshots the values a batch was
     // checked against — historical QC records never change retroactively.
+    const changes: string[] = [];
+    const diff = (label: string, before: string, after: string) => {
+      if (before !== after) changes.push(`${label}: "${before}" → "${after}"`);
+    };
+    diff("name", material.name, input.name.trim());
+    diff("code", material.code, input.code.trim().toUpperCase());
+    diff("type", material.type, input.type);
+    diff("lab", labNameById(material.labId), labNameById(input.labId));
+    diff("supplier", material.supplier, input.supplier.trim());
+    diff("lot", material.lotNumber, input.lotNumber.trim());
+    diff("expiry", material.expiryDate, input.expiryDate.trim());
+    diff("description", material.description, input.description.trim());
+    const beforeEv = JSON.stringify(material.expectedValues);
     applyInput(material, input);
+    if (JSON.stringify(material.expectedValues) !== beforeEv) {
+      changes.push(`expected values changed (${material.expectedValues.length} analyte(s))`);
+    }
+    if (changes.length > 0) addQcEvent(material, actor.email, `Material edited: ${changes.join("; ")}`);
     return { status: "success", materialId };
   },
 
@@ -272,6 +307,11 @@ export const mockQcApi: QcApi = {
     if (material.status === status) return { status: "success" };
     material.status = status;
     material.statusReason = reason.trim();
+    addQcEvent(
+      material,
+      actor.email,
+      `Material ${status === "inactive" ? "deactivated" : "reactivated"} — ${reason.trim()}`,
+    );
     return { status: "success", materialId };
   },
 
@@ -296,6 +336,11 @@ export const mockQcApi: QcApi = {
       uploadedAt: new Date().toLocaleDateString("en-GB", { day: "numeric", month: "short", year: "numeric" }),
       uploadedBy: actor.email,
     };
+    addQcEvent(
+      material,
+      actor.email,
+      `Certificate uploaded: ${file.fileName} (sha256 ${material.certificate.sha256.slice(0, 16)}…)`,
+    );
     return { status: "success", materialId };
   },
 };

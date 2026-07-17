@@ -818,7 +818,21 @@ export const mockEquipmentApi: EquipmentApi = {
       return { status: "error", message: `A type named "${trimmed}" already exists (reactivate it instead of adding a duplicate).` };
     }
     const id = `eqt-${crypto.randomUUID()}`;
-    mockDb.equipmentTypes.set(id, { id, orgId: actor.orgId, name: trimmed, status: "active" });
+    mockDb.equipmentTypes.set(id, {
+      id,
+      orgId: actor.orgId,
+      name: trimmed,
+      status: "active",
+      // Per-type audit trail (invariants 1+6 — 17 Jul 2026 gap closure).
+      events: [
+        {
+          id: `eqtev-${crypto.randomUUID()}`,
+          at: new Date().toISOString(),
+          by: actor.email,
+          summary: `Type created ("${trimmed}")`,
+        },
+      ],
+    });
     return { status: "success" };
   },
 
@@ -834,7 +848,15 @@ export const mockEquipmentApi: EquipmentApi = {
     );
     if (clash) return { status: "error", message: `A type named "${trimmed}" already exists.` };
     // Equipment references the type by id, so a rename follows everywhere.
-    type.name = trimmed;
+    if (type.name !== trimmed) {
+      type.events.push({
+        id: `eqtev-${crypto.randomUUID()}`,
+        at: new Date().toISOString(),
+        by: actor.email,
+        summary: `name: "${type.name}" → "${trimmed}"`,
+      });
+      type.name = trimmed;
+    }
     return { status: "success" };
   },
 
@@ -851,6 +873,12 @@ export const mockEquipmentApi: EquipmentApi = {
     // (grandfathered); it just stops being offered for NEW equipment.
     type.status = status;
     type.statusReason = reason.trim();
+    type.events.push({
+      id: `eqtev-${crypto.randomUUID()}`,
+      at: new Date().toISOString(),
+      by: actor.email,
+      summary: `Type ${status === "inactive" ? "deactivated" : "reactivated"} — ${reason.trim()}`,
+    });
     return { status: "success" };
   },
 };

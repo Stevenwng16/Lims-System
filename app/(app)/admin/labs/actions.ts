@@ -41,7 +41,7 @@ export async function updateLabAction(
   _prev: LabFormState,
   formData: FormData,
 ): Promise<LabFormState> {
-  const { orgId } = await requireAdminOrgId();
+  const { orgId, email } = await requireAdminOrgId();
   const labId = String(formData.get("labId") ?? "");
   const requestedStatus = formData.get("status") === "inactive" ? "inactive" : "active";
   const statusReason = String(formData.get("statusReason") ?? "");
@@ -52,14 +52,19 @@ export async function updateLabAction(
   const guard = await labApi.checkLabStatusChange(orgId, labId, requestedStatus, statusReason);
   if (guard.status === "error") return { error: guard.message };
 
-  const result = await labApi.updateLab(orgId, labId, {
-    name: String(formData.get("name") ?? ""),
-    code: String(formData.get("code") ?? ""),
-    description: String(formData.get("description") ?? ""),
-  });
+  const result = await labApi.updateLab(
+    orgId,
+    labId,
+    {
+      name: String(formData.get("name") ?? ""),
+      code: String(formData.get("code") ?? ""),
+      description: String(formData.get("description") ?? ""),
+    },
+    email, // audit attribution (invariants 1+6)
+  );
   if (result.status === "error") return { error: result.message };
 
-  const statusResult = await labApi.setLabStatus(orgId, labId, requestedStatus, statusReason);
+  const statusResult = await labApi.setLabStatus(orgId, labId, requestedStatus, statusReason, email);
   if (statusResult.status === "error") return { error: statusResult.message };
 
   revalidatePath("/admin/labs");

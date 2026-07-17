@@ -17,6 +17,18 @@ function labNameById(labId: string): string {
   return mockDb.labs.get(labId)?.name ?? labId;
 }
 
+/** Append one audit event to the method (invariants 1+6 — 17 Jul 2026 gap
+ * closure). versions[] captures WHAT each version prescribes; events[] is the
+ * authoritative act history (create/edit/version/status/template, attributed). */
+function addMethodEvent(method: MockMethod, actorEmail: string, summary: string): void {
+  method.events.push({
+    id: `mev-${crypto.randomUUID()}`,
+    at: new Date().toISOString(),
+    by: actorEmail,
+    summary,
+  });
+}
+
 function orgMethods(orgId: string): MockMethod[] {
   return [...mockDb.methods.values()].filter((m) => m.orgId === orgId);
 }
@@ -215,7 +227,13 @@ export const mockMethodApi: MethodApi = {
       usedByBatches: false,
       templates: [],
       versions: [buildVersion(actor, input, 1, null)],
+      events: [],
     });
+    addMethodEvent(
+      mockDb.methods.get(id)!,
+      actor.email,
+      `Method created (name "${input.name.trim()}", code ${input.code.trim().toUpperCase()}, version 1)`,
+    );
     return { status: "success", methodId: id };
   },
 
@@ -239,6 +257,7 @@ export const mockMethodApi: MethodApi = {
         return { status: "success", methodId };
       }
       method.versions.push(next);
+      addMethodEvent(method, actor.email, `Version ${next.version} created (method edited while in use — prior versions stay referenced by their batches)`);
       return { status: "success", methodId, newVersion: next.version };
     }
     // Unused method: version 1 may still be shaped in place (skip no-ops so
@@ -246,6 +265,7 @@ export const mockMethodApi: MethodApi = {
     const replacement = buildVersion(actor, input, current.version, current);
     if (versionContentKey(replacement) !== versionContentKey(current)) {
       method.versions[method.versions.length - 1] = replacement;
+      addMethodEvent(method, actor.email, `Method edited in place (unused, still version ${current.version}): "${current.name}"/${current.code} → "${replacement.name}"/${replacement.code}`);
     }
     return { status: "success", methodId };
   },
@@ -263,6 +283,11 @@ export const mockMethodApi: MethodApi = {
     // AC 10/12: never deleted; existing clearance records stay untouched.
     method.status = status;
     method.statusReason = reason.trim();
+    addMethodEvent(
+      method,
+      actor.email,
+      `Method ${status === "inactive" ? "deactivated" : "reactivated"} — ${reason.trim()}`,
+    );
     return { status: "success", methodId };
   },
 
@@ -306,9 +331,15 @@ export const mockMethodApi: MethodApi = {
         createdAt: new Date().toLocaleDateString("en-GB", { day: "numeric", month: "short", year: "numeric" }),
         createdBy: actor.email,
       });
+      addMethodEvent(
+        method,
+        actor.email,
+        `Template v${templateVersion} uploaded (${file.fileName}) — method version ${current.version + 1} pins it`,
+      );
       return { status: "success", methodId, newVersion: current.version + 1 };
     }
     current.templateVersion = templateVersion;
+    addMethodEvent(method, actor.email, `Template v${templateVersion} uploaded (${file.fileName})`);
     return { status: "success", methodId };
   },
 };
