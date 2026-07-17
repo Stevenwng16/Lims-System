@@ -32,6 +32,6 @@ noted as (rec: …). None are blocking; all are built-on-decision.
 
 ---
 
-*Adjacent observation, not one of the 16:* the repo still has **no persistent test suite** — the
-review passes' 121 behavioural checks live in throwaway scratch harnesses. Deciding where those
-checks permanently live is worth adding to the same triage sitting.
+*Adjacent observation — resolved 17 Jul 2026:* the repo now has a persistent **Vitest invariant
+suite** (`tests/invariants/`, `npm test`, both seed modes). The review passes' ~121 scratch-harness
+checks were never committed; porting the valuable ones into the suite is optional follow-up.
