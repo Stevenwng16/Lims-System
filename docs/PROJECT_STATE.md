@@ -100,7 +100,7 @@ Status vocabulary: **done (mock)** = flows + rules work against the mock per the
 - **US-D2 work queue**: prioritised batch list (deadline-derived, server-computed overdue), claim/release/assign, `assigneeCanAct` liveness badge for departed assignees — done (mock). Admin "All labs" view included (13 Jul).
 - **US-D3 steps**: minimal state + append-only transition events; advance with structured equipment selection (Blocked not selectable), set-back with reason (never reopens composition), History = pure event projection; concurrency by expected-step compare — done (mock).
 - **US-D4 result entry**: append-only measurement records (numeric/censored `<`/`>`/qualifier/text/no-result), corrections via supersede + mandatory reason (chain visible), origin provenance (manual/paste/worksheet/import), bulk paste and worksheet auto-read with staged **preview→confirm one-token contract** (post-preview drift refuses), ADR-4 strict numeric parsing — done (mock). **No reporting rounding** (see §3).
-- **US-D5 instrument import**: per-lab import configs (CSV/Excel, wide/long, declared separators), RFC-4180 CSV parser + exceljs raw-text extraction, preview with per-row/cell outcomes, ambiguous QC-code matches refuse (never last-wins), self-contained import event (source file + sha256 + frozen mapping + outcomes) — done (mock).
+- **US-D5 instrument import**: per-lab import configs (CSV/Excel, wide/long, declared separators **and declared sheet name** — 17 Jul), RFC-4180 CSV parser + exceljs **string-typed cells only** (number/date/formula cells refuse, 17 Jul — no float path), preview with per-row/cell outcomes, ambiguous QC-code matches refuse (never last-wins), self-contained import event (source file + sha256 + frozen mapping + outcomes; stored even when nothing applies — 17 Jul) — done (mock). Configs listed under the masterdata scoping exemption. **Superseded direction:** upload import is the interim until the embedded worksheet (US-D7 draft) lands.
 - **US-D6 review & completion**: review panel (results vs QC expectations, correction chains, §7.8.8 amendment flags), per-result validity (pending→valid/rejected, each flip an audit event, reviewer-must-differ per lab toggle), close-gap-no-result, batch completion latch, post-completion replacement guarded — done (mock). **Automated QC verdicts deliberately absent (epic E).**
 
 ### Out of scope (hooks only, not built)
@@ -118,9 +118,9 @@ Security/enforcement (all "by design of the mock", all backend work):
 7. Read UI for the new lab/method/QC/type audit trails deliberately deferred to epic E (equipment History is the only surfaced trail).
 
 Quality/process:
-8. ~~Zero automated tests~~ **Closed 17 Jul 2026**: Vitest invariant suite (`tests/invariants/`, 46 tests × two seed modes, `npm test`) covering append-only, attributability, never-delete, versioning, tenant isolation, authorization, and the TTL/complexity wiring. The review passes' scratch-harness checks (~121) remain uncommitted history.
+8. ~~Zero automated tests~~ **Closed 17 Jul 2026**: Vitest invariant suite (`tests/invariants/` + `tests/triage/`, 70 tests across the two seed projects, `npm test`) covering append-only, attributability, never-delete, versioning, tenant isolation, authorization, the TTL/complexity wiring, and the 17 Jul triage guards. The review passes' scratch-harness checks (~121) remain uncommitted history.
 9. ~~8 lint errors~~ **Closed 17 Jul 2026**: `npx eslint` reports 0 errors, 0 warnings; `npx tsc --noEmit` clean.
-10. **16 open "Ramazan decisions"** parked during review passes 2–4 — triage list in `docs/open-decisions.md`; none blocking, all design choices awaiting his call.
+10. ~~16 open "Ramazan decisions"~~ **Closed 21 Jul 2026**: all 16 triaged 17 Jul (recommended option on every item) and built — commit-by-commit map in `docs/open-decisions.md`. Item 7 became a direction change: data entry moves from uploaded sheets to an **embedded in-app worksheet** (proposed US-D7, `docs/story-draft-embedded-worksheet.md`); the hardened upload import is the interim.
 11. Supabase scaffold drift: `lib/auth/supabase.ts` maps only `admin`/`user` DB roles vs the app's five-role matrix (unknown → read-only degradation); migrations predate all 13 Jul model changes (org-wide jobs etc.) and would need rework.
 12. `.env.local` is committed by team decision (5 Jul) — currently harmless (mock secrets only), but worth revisiting before real credentials exist.
 
@@ -143,6 +143,7 @@ Full log: `docs/decision-log.md` (57 dated entries, one line each — the non-ne
 | 13 Jul | **Admins are org-wide** — no lab assignments; "All labs" switcher default. Supersedes the same-day creator-auto-assign decision. |
 | 13 Jul | **Org-specific lists start EMPTY** at provisioning (sample types, result qualifiers, equipment types); demo org seeds its own as data. |
 | 13 Jul | **dd-mm-yyyy strict masked date entry** (ISO on the wire); derived **Getting-started checklist** (no stored onboarding state); job deadlines server-validated. |
+| 17 Jul | **All 16 parked decisions triaged** (recommended option on each; one consolidated log entry) and subsequently built. **Data entry to move to an embedded in-app worksheet** (proposed US-D7) — uploaded-sheet import becomes the interim, hardened to string-typed cells + declared sheet names. |
 
 ## 8. Doc drift — docs vs. actual code
 
@@ -170,8 +171,8 @@ The root cause: `docs/stories/` and `docs/00-INDEX.md` are **frozen Notion expor
 | `docs/review-progress.md` working agreement | "Git is Ramazan's. Never run git write commands." | Since 13 Jul, Ramazan explicitly has Claude commit (co-authored commits `9ef885a`…`cfde982`) | ✅ agreement updated 17 Jul (Claude commits on request, co-authored) |
 | `docs/research/us-a1-auth-provider-options.md` + Supabase migrations | Supabase Auth chosen and schema written | Adapter inactive (env commented out); migrations predate org-wide jobs and the five-role matrix mapping is incomplete | note as "parked" |
 
-**For the story-writing session:** the drafted amendment texts in `docs/notion-amendments-2026-07-13.md` are ready to paste into Notion — Decisions A–F plus changelog lines (D/E/F close the coverage gaps this audit found: US-C3 AC 4, US-D2 AC 1, the "n.b." qualifier default). The 16 open design decisions are triage-ready in `docs/open-decisions.md`. New stories for epics E/F/G can build on the hooks listed at the end of §5.
+**For the story-writing session:** the drafted amendment texts in `docs/notion-amendments-2026-07-13.md` are ready to paste into Notion — Decisions A–G plus changelog lines (D/E/F close the coverage gaps this audit found; G carries the 17 Jul triage amendments: US-B3 AC 2 optional fields, US-D4 AC 6 locale display dropped, rejected-cell completion reading). The 16 design decisions are **decided and built** (`docs/open-decisions.md` has the commit map); the proposed **US-D7 embedded-worksheet story** (`docs/story-draft-embedded-worksheet.md`) is ready to refine and freeze in Notion. New stories for epics E/F/G can build on the hooks listed at the end of §5.
 
 ---
 
-*Everything above was verified against the code at commit `cfde982` (three independent code/doc audits, 17 Jul 2026). Items that could not be verified in the repo are marked "unverified". Nothing in this file describes intended-but-unbuilt behaviour without saying so.*
+*Everything above was verified against the code at commit `cfde982` (three independent code/doc audits, 17 Jul 2026). §5–§8 updated 21 Jul 2026 after the triage build (commits `52a9734`…`4039b78`; suite 70/70 on both seeds, tsc + eslint clean). Items that could not be verified in the repo are marked "unverified". Nothing in this file describes intended-but-unbuilt behaviour without saying so.*

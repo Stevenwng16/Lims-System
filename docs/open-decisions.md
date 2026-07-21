@@ -1,11 +1,28 @@
-# Open decisions — DECIDED 17 Jul 2026
+# Open decisions — DECIDED 17 Jul 2026, ALL BUILT 21 Jul 2026
 
 **All 16 items were triaged by Ramazan on 17 Jul 2026 — the recommended
 option was chosen on every item** (for #7 additionally: data entry moves to an
 embedded in-app worksheet, see docs/story-draft-embedded-worksheet.md; the
 string-cells-only rule is the interim). One consolidated decision-log entry
-records all 16. Items 4, 10 and 16 are log/amendment-only; the rest are being
-built (see git history of 17 Jul 2026).
+records all 16.
+
+**Build status (21 Jul 2026): every item is closed.** Items 4, 10 and 16 were
+log/amendment-only (Notion amendment G covers 4 and 10; 16 confirms the
+existing manager-only recovery). The decisions were recorded in 52a9734; the
+other 13 items shipped in five build commits:
+
+| Commit | Items | Content |
+| --- | --- | --- |
+| 6486e0e | 1, 2 | calibration "none" blocks availability; retiring/re-scheduling a blocking check type refuses |
+| 628a50e | 3 | voidJob/voidSample refuse while a live sample sits in an unfinished batch |
+| 3beccc9 | 5, 6 | completion gate: rejected cells block with a closure route; QC cells join the gap list and closeGapNoResult |
+| 1721396 | 7 (interim), 8, 9, 12 | string-cells-only xlsx reading; qualifier-name guard + ambiguous-cell rejection; declared sheet name; all-skipped confirm stores the import event |
+| 4039b78 | 11, 13, 14, 15 | import configs under the masterdata exemption; step-filter union; unassigned-filter symmetry; QC-code collision guard |
+
+Item 7's redesign itself is the proposed US-D7 story draft
+(docs/story-draft-embedded-worksheet.md), to be frozen in Notion.
+Verification at close-out: 70/70 tests on both seed projects, tsc and eslint
+clean.
 
 The 16 design decisions parked during review passes 2–4, one line each for triage in one
 sitting. Headlines are verbatim from `docs/review-progress.md`, which holds the full options
