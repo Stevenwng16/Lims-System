@@ -4,6 +4,7 @@ import {
   getOrgSettings,
   mockDb,
   type CheckCriterion,
+  type CheckFrequency,
   type MockCheckEntry,
   type MockCheckType,
   type MockEquipment,
@@ -138,6 +139,27 @@ function scheduledNextDue(ct: MockCheckType, last: MockCheckEntry | null): strin
   return addDaysIso(last.performedAt.slice(0, 10), ct.frequency === "daily" ? 1 : 7);
 }
 
+/** The Blocked contribution of ONE check type, mirroring equipmentAvailability
+ * (failed last result; for scheduled checks also never-performed/overdue).
+ * `frequency` may differ from the stored one to evaluate a proposed edit.
+ * Triage decision 17 Jul 2026: a check type that currently blocks cannot be
+ * retired or re-scheduled out of blocking — that would be a disguised
+ * "unblock" (hard-never list); recovery is a passing entry or out-of-service.
+ * Same rationale as the never-cleared calibration due date. */
+function checkTypeBlockReason(
+  eq: MockEquipment,
+  ct: MockCheckType,
+  frequency: CheckFrequency = ct.frequency,
+): string | null {
+  const last = lastEntryFor(eq, ct.id);
+  if (last?.result === "fail") return `the last "${ct.name}" check failed`;
+  if (frequency === "per-use") return null;
+  if (!last) return `the required check "${ct.name}" has never been performed`;
+  const nextDue = addDaysIso(last.performedAt.slice(0, 10), frequency === "daily" ? 1 : 7);
+  if (nextDue < todayIso()) return `"${ct.name}" is overdue since ${nextDue}`;
+  return null;
+}
+
 export function calibrationState(dueDate: string | null, warnDays: number): CalibrationState {
   if (!dueDate) return "none";
   if (dueDate < todayIso()) return "expired";
@@ -161,6 +183,13 @@ export function equipmentAvailability(eq: MockEquipment, warnDays: number): Avai
   }
 
   const cal = calibrationState(eq.calibration.dueDate, warnDays);
+  // Triage decision 17 Jul 2026: "no calibration recorded" BLOCKS — fitness
+  // for use must be proven, so a brand-new balance is never silently
+  // available for a weighing step. Mirrors the never-performed-check rule;
+  // calibration becomes mandatory-by-consequence.
+  if (cal === "none") {
+    blockedReasons.push("No calibration recorded — record a calibration (or its due date) first");
+  }
   if (cal === "expired") blockedReasons.push(`Calibration expired (was due ${eq.calibration.dueDate})`);
   if (cal === "due-soon") warnings.push(`Calibration due ${eq.calibration.dueDate}`);
 
@@ -594,6 +623,20 @@ export const mockEquipmentApi: EquipmentApi = {
     const error = validateCheckTypeInput(eq, input, checkTypeId);
     if (error) return { status: "error", message: error };
 
+    // Triage decision 17 Jul 2026: an edit may not re-schedule an ACTIVE
+    // block away (e.g. overdue daily check → per-use). Failed results block
+    // regardless of frequency, so only the schedule contribution is at stake.
+    if (ct.status === "active") {
+      const before = checkTypeBlockReason(eq, ct);
+      const after = checkTypeBlockReason(eq, ct, input.frequency);
+      if (before !== null && after === null) {
+        return {
+          status: "error",
+          message: `This change would clear an active block (${before}). Log a passing entry or set the equipment out of service first.`,
+        };
+      }
+    }
+
     // Past entries are untouched: each stores the result it was computed with
     // at logging time, so tightening a tolerance never rewrites history.
     const beforeLabel = `${ct.name} (${ct.frequency}) — ${criterionLabel(ct.criterion)}`;
@@ -617,6 +660,17 @@ export const mockEquipmentApi: EquipmentApi = {
     if (ct.status === status) return { status: "success" };
     if (!reason.trim()) {
       return { status: "error", message: "A reason is required to change the check type's status." };
+    }
+    // Triage decision 17 Jul 2026: retiring the check type that currently
+    // blocks the equipment would be a disguised "unblock" (hard-never list).
+    if (status === "inactive") {
+      const blockReason = checkTypeBlockReason(eq, ct);
+      if (blockReason) {
+        return {
+          status: "error",
+          message: `This check type cannot be retired while it blocks the equipment (${blockReason}). Log a passing entry or set the equipment out of service first.`,
+        };
+      }
     }
     if (status === "active") {
       const clash = eq.checkTypes.some(
