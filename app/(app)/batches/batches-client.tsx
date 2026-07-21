@@ -108,7 +108,9 @@ export function BatchQueue({
     if (stepFilter !== ALL && !(r.status === "open" && r.stepName === stepFilter)) return false;
     if (methodFilter !== ALL && r.methodId !== methodFilter) return false;
     if (assigneeFilter === "mine" && !r.mine) return false;
-    if (assigneeFilter === "unassigned" && !(active(r) && r.assignee === null)) return false;
+    // Unassigned matches finished batches too (triage decision 14 — symmetric
+    // with "Mine"); the AC 5 open-pool COUNT above keeps the active-only rule.
+    if (assigneeFilter === "unassigned" && r.assignee !== null) return false;
     if (
       assigneeFilter !== ALL &&
       assigneeFilter !== "mine" &&

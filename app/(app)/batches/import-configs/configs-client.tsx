@@ -45,16 +45,21 @@ type ColumnRow = { key: string; header: string; analyteName: string; unit: strin
 let rowSeq = 1;
 const newKey = () => `col-${rowSeq++}`;
 
+type LabOption = { id: string; name: string };
+
 function ConfigDialog({
-  labId,
+  labs,
   source,
   onDone,
 }: {
-  labId: string;
+  labs: LabOption[];
   source: MockImportConfig | null; // null = create
   onDone: () => void;
 }) {
   const [state, submit, pending] = useActionState(saveImportConfigAction, initialState);
+  // Masterdata exemption (triage decision 11): the dialog picks the lab, like
+  // the QC-materials dialog — the page is no longer active-lab-scoped.
+  const [labId, setLabId] = useState(source?.labId ?? labs[0]?.id ?? "");
   const [fileType, setFileType] = useState<"csv" | "excel">(source?.fileType ?? "csv");
   const [orientation, setOrientation] = useState<"wide" | "long">(source?.orientation ?? "wide");
   const [decimalSeparator, setDecimalSeparator] = useState<"comma" | "point">(
@@ -161,6 +166,21 @@ function ConfigDialog({
             <div className="space-y-2">
               <Label htmlFor="cfg-name">Name</Label>
               <Input id="cfg-name" name="name" defaultValue={source?.name ?? ""} required autoFocus />
+            </div>
+            <div className="space-y-2">
+              <Label>Lab</Label>
+              <Select value={labId} onValueChange={(v) => v && setLabId(v)}>
+                <SelectTrigger>
+                  <SelectValue placeholder="Choose a lab" />
+                </SelectTrigger>
+                <SelectContent>
+                  {labs.map((lab) => (
+                    <SelectItem key={lab.id} value={lab.id}>
+                      {lab.name}
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
             </div>
             <div className="space-y-2">
               <Label htmlFor="cfg-id-col">ID column (sample / QC code)</Label>
@@ -332,12 +352,13 @@ function StatusDialog({ config, onDone }: { config: MockImportConfig; onDone: ()
 type DialogState = { kind: "create" } | { kind: "edit"; id: string } | { kind: "status"; id: string } | null;
 
 export function ImportConfigsClient({
-  labId,
+  labs,
   configs,
 }: {
-  labId: string;
+  labs: LabOption[];
   configs: MockImportConfig[];
 }) {
+  const labNames = new Map(labs.map((l) => [l.id, l.name] as const));
   const [dialog, setDialog] = useState<DialogState>(null);
   const close = () => setDialog(null);
   const source = dialog && dialog.kind !== "create" ? (configs.find((c) => c.id === dialog.id) ?? null) : null;
@@ -354,6 +375,7 @@ export function ImportConfigsClient({
           <TableHeader>
             <TableRow>
               <TableHead>Name</TableHead>
+              <TableHead>Lab</TableHead>
               <TableHead>Type</TableHead>
               <TableHead>Orientation</TableHead>
               <TableHead>Separators</TableHead>
@@ -366,6 +388,7 @@ export function ImportConfigsClient({
             {configs.map((c) => (
               <TableRow key={c.id} className={c.status === "inactive" ? "opacity-60" : undefined}>
                 <TableCell className="font-medium">{c.name}</TableCell>
+                <TableCell>{labNames.get(c.labId) ?? c.labId}</TableCell>
                 <TableCell className="uppercase">{c.fileType}</TableCell>
                 <TableCell className="capitalize">{c.orientation}</TableCell>
                 <TableCell className="text-sm">
@@ -404,9 +427,9 @@ export function ImportConfigsClient({
         </Table>
       </div>
 
-      {dialog?.kind === "create" && <ConfigDialog labId={labId} source={null} onDone={close} />}
+      {dialog?.kind === "create" && <ConfigDialog labs={labs} source={null} onDone={close} />}
       {dialog?.kind === "edit" && source && (
-        <ConfigDialog key={source.id} labId={labId} source={source} onDone={close} />
+        <ConfigDialog key={source.id} labs={labs} source={source} onDone={close} />
       )}
       {dialog?.kind === "status" && source && <StatusDialog config={source} onDone={close} />}
     </>

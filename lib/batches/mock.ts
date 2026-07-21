@@ -462,6 +462,28 @@ function validateComposition(
     qc.push({ materialId: entry.materialId, quantity: entry.quantity });
   }
 
+  // Triage decision 15 (17 Jul 2026): an edit that would make TWO different
+  // materials with the SAME code coexist in the batch is blocked at the
+  // source — the working copy prints that code as the row ID for both, and
+  // every matcher downstream must treat it as ambiguous. Legal only while it
+  // ALREADY existed (grandfathered pair): remove the held entry first.
+  const codeOf = (materialId: string) =>
+    (mockDb.qcMaterials.get(materialId)?.code ?? materialId).trim().toUpperCase();
+  const byCode = new Map<string, string[]>();
+  for (const entry of qc) {
+    const code = codeOf(entry.materialId);
+    byCode.set(code, [...(byCode.get(code) ?? []), entry.materialId]);
+  }
+  for (const [code, ids] of byCode) {
+    if (ids.length < 2) continue;
+    const preexisting = ids.every((id) => heldQc.has(id));
+    if (!preexisting) {
+      return {
+        error: `Two QC materials in this composition share the code "${code}" — the working copy and import matching cannot tell them apart. Remove the held entry first, or pick a material with a distinct code.`,
+      };
+    }
+  }
+
   // AC 6: capacity = occupied positions, client samples PLUS QC units.
   const positions = sampleIds.length + qc.reduce((s, e) => s + e.quantity, 0);
   if (positions > pinned.maxSamplesPerBatch) {
@@ -1489,9 +1511,11 @@ export const mockBatchApi: BatchApi = {
   // ---- US-D5: instrument import --------------------------------------------
 
   async listImportConfigs(actor, labId): Promise<MockImportConfig[]> {
-    if (!canSeeLab(actor, labId)) return [];
+    // labId null = the masterdata exemption (triage decision 11): every lab
+    // the actor may view, like the QC-materials list — admins are org-wide.
+    if (labId !== null && !canSeeLab(actor, labId)) return [];
     return [...mockDb.importConfigs.values()]
-      .filter((c) => c.orgId === actor.orgId && c.labId === labId)
+      .filter((c) => c.orgId === actor.orgId && (labId === null ? canSeeLab(actor, c.labId) : c.labId === labId))
       .sort((a, b) => a.name.localeCompare(b.name));
   },
 

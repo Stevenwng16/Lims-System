@@ -442,7 +442,10 @@ export interface BatchApi {
 
   /** AC 1: lab-level masterdata — everyone with lab access may read (the
    * import dialog needs the list); managing is Admin/Lab manager. */
-  listImportConfigs(actor: BatchActor, labId: string): Promise<MockImportConfig[]>;
+  /** labId null = every lab the actor may view — the masterdata scoping
+   * exemption (triage decision 11, 17 Jul 2026), like the QC/equipment lists;
+   * a concrete labId scopes to that lab (the batch import dialog). */
+  listImportConfigs(actor: BatchActor, labId: string | null): Promise<MockImportConfig[]>;
   /** Create (configId null) or edit. Deactivate-never-delete via setStatus. */
   saveImportConfig(
     actor: BatchActor,

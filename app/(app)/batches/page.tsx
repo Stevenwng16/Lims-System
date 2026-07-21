@@ -31,8 +31,17 @@ export default async function BatchesPage() {
   // activeLab null = org-wide (support session, or an admin's "All labs" view
   // — 13 Jul 2026 decision).
   const rows = await batchApi.listBatches(actor, activeLab?.id ?? null);
-  // US-D2 AC 4: step filter over the lab's active methods' step names.
-  const stepOptions = activeLab ? stepNameOptionsForLab(actor.orgId, activeLab.id) : [];
+  // US-D2 AC 4: step filter over the lab's active methods' step names,
+  // UNIONED with the current steps of the batches actually listed (triage
+  // decision 13, 17 Jul 2026): rows show their PINNED version's step names,
+  // so a renamed step or a deactivated method must not make its open batches
+  // invisible to every step view. Also covers the admin "All labs" queue.
+  const stepOptions = [
+    ...new Set([
+      ...(activeLab ? stepNameOptionsForLab(actor.orgId, activeLab.id) : []),
+      ...rows.filter((r) => r.status === "open").map((r) => r.stepName),
+    ]),
+  ].sort((a, b) => a.localeCompare(b));
 
   // Coarse button visibility only — the method-level rules (analyst clearance)
   // are enforced server-side and on the New-batch page itself.

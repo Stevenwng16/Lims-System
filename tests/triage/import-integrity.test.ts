@@ -2,7 +2,6 @@ import ExcelJS from "exceljs";
 import { describe, expect, test } from "vitest";
 import { batchApi } from "@/lib/batches";
 import { settingsApi } from "@/lib/settings";
-import { getOrgSettings } from "@/lib/mock-db";
 import {
   addSampleType,
   makeAcceptedJob,
