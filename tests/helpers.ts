@@ -102,13 +102,19 @@ export async function makeAcceptedJob(admin: TestActor, methodId: string, typeId
   return { jobId, sampleId, job };
 }
 
-export async function makeBatch(admin: TestActor, labId: string, methodId: string, sampleIds: string[]) {
+export async function makeBatch(
+  admin: TestActor,
+  labId: string,
+  methodId: string,
+  sampleIds: string[],
+  qc: { materialId: string; quantity: number }[] = [],
+) {
   const r = await batchApi.createBatch(admin, {
     labId,
     methodId,
     sampleIds,
     confirmAddMethod: [],
-    qc: [],
+    qc,
   });
   expect(r.status).toBe("success");
   const batchId = (r as { batchId: string }).batchId;

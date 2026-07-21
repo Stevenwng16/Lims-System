@@ -299,9 +299,19 @@ export type ReviewView = {
    * ± 0.3 mg/L") or the blank's reporting limit ("< LOQ 0.010") — context for
    * the HUMAN judgement; no automated verdict until epic E. */
   qcExpectations: Record<string, string>;
-  /** AC 4: every (sample × analyte) cell without a result — completion is
-   * impossible while any remains unaccounted. */
-  gaps: { targetId: string; label: string; analyteId: string; analyteName: string }[];
+  /** Every (sample × analyte) AND (QC × analyte) cell that blocks completion
+   * (triage decisions 5+6, 17 Jul 2026): "empty" = no result at all;
+   * "rejected" = the current record is rejected without a superseding value
+   * or no-result. Each closes via set-back re-measurement or an explicit
+   * no-result + reason. */
+  gaps: {
+    targetType: "sample" | "qc";
+    targetId: string;
+    label: string;
+    analyteId: string;
+    analyteName: string;
+    kind: "empty" | "rejected";
+  }[];
   undecidedCount: number; // current records still pending a decision
   canReview: boolean;
   reviewBlockedReason: string | null; // role or AC 2 segregation

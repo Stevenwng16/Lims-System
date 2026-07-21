@@ -2059,18 +2059,26 @@ export const mockBatchApi: BatchApi = {
     }
     const denied = canReviewBatch(actor, batch);
     if (denied) return { status: "error", message: denied };
-    // AC 4 covers (sample × analyte) cells; QC cells are judged by the human
-    // reviewer and formalised in epic E.
-    if (target.targetType !== "sample" || !batch.sampleIds.includes(target.targetId)) {
-      return { status: "error", message: "Gap closure applies to this batch's sample cells." };
+    // Closure covers sample AND QC cells (triage decision 6, 17 Jul 2026 —
+    // QC shares the completeness universe, §7.7).
+    const validTarget =
+      target.targetType === "sample"
+        ? batch.sampleIds.includes(target.targetId)
+        : batch.qc.some((e) => e.materialId === target.targetId);
+    if (!validTarget) {
+      return { status: "error", message: "Gap closure applies to this batch's sample and QC cells." };
     }
     const method = mockDb.methods.get(batch.methodId);
     if (!method) return { status: "error", message: "Unknown method." };
     const pinned = methodVersionByNumber(method, batch.methodVersion);
     const analyte = pinned.analytes.find((a) => a.id === analyteId);
     if (!analyte) return { status: "error", message: "Unknown analyte for this batch's pinned method version." };
-    if (currentByCell(batch).has(cellKey(target, analyteId))) {
-      return { status: "error", message: "This cell already has a value — only empty cells are closed as no-result." };
+    // An empty cell closes plainly; a REJECTED current record is closed by a
+    // superseding no-result (triage decision 5 — AC 6 read literally: bare
+    // rejected is not a completable end state). Valid/pending cells never.
+    const current = currentByCell(batch).get(cellKey(target, analyteId)) ?? null;
+    if (current && current.validity !== "rejected") {
+      return { status: "error", message: "This cell already has a value — only empty or rejected cells are closed as no-result." };
     }
     if (!reason.trim()) return { status: "error", message: "Closing a gap as no-result requires a reason." };
 
@@ -2078,7 +2086,7 @@ export const mockBatchApi: BatchApi = {
     // the same act (it IS the decision), fully attributed.
     const record: MockMeasurementRecord = {
       id: `res-${crypto.randomUUID()}`,
-      targetType: "sample",
+      targetType: target.targetType,
       targetId: target.targetId,
       analyteId,
       methodId: batch.methodId,
@@ -2089,8 +2097,8 @@ export const mockBatchApi: BatchApi = {
       importEventId: null,
       enteredBy: actor.email,
       enteredAt: new Date().toISOString(),
-      supersedes: null,
-      supersedeReason: null,
+      supersedes: current?.id ?? null,
+      supersedeReason: current ? reason.trim() : null,
       validity: "valid",
       validitySetBy: actor.email,
       validitySetAt: new Date().toISOString(),
@@ -2105,7 +2113,7 @@ export const mockBatchApi: BatchApi = {
       batch,
       actor,
       "result-entered",
-      `Result ${target.targetId} · ${analyte.name}: no result — ${reason.trim()} (gap closed at review)`,
+      `Result ${rowLabelFor(batch, target)} · ${analyte.name}: no result — ${reason.trim()}${current ? " (supersedes the rejected value; closed at review)" : " (gap closed at review)"}`,
     );
     return { status: "success", batchId };
   },
@@ -2288,21 +2296,60 @@ function qcExpectationsFor(batch: MockBatch, pinned: MethodVersion): Record<stri
  * reason (AC 5); superseded records are history and never block. */
 function completionState(batch: MockBatch, pinned: MethodVersion) {
   const current = currentByCell(batch);
-  const gaps: { targetId: string; label: string; analyteId: string; analyteName: string }[] = [];
+  const gaps: {
+    targetType: "sample" | "qc";
+    targetId: string;
+    label: string;
+    analyteId: string;
+    analyteName: string;
+    kind: "empty" | "rejected";
+  }[] = [];
   for (const sampleId of batch.sampleIds) {
     for (const analyte of pinned.analytes) {
       if (!current.has(`sample:${sampleId}:${analyte.id}`)) {
-        gaps.push({ targetId: sampleId, label: sampleId, analyteId: analyte.id, analyteName: analyte.name });
+        gaps.push({ targetType: "sample", targetId: sampleId, label: sampleId, analyteId: analyte.id, analyteName: analyte.name, kind: "empty" });
+      }
+    }
+  }
+  // Triage decision 6 (17 Jul 2026): QC cells share the completeness
+  // universe — a batch must never complete with a wholly unmeasured blank
+  // (§7.7: QC must be accounted for). Same grid, same closure route.
+  for (const materialId of new Set(batch.qc.map((e) => e.materialId))) {
+    const label = rowLabelFor(batch, { targetType: "qc", targetId: materialId });
+    for (const analyte of pinned.analytes) {
+      if (!current.has(`qc:${materialId}:${analyte.id}`)) {
+        gaps.push({ targetType: "qc", targetId: materialId, label, analyteId: analyte.id, analyteName: analyte.name, kind: "empty" });
       }
     }
   }
   let undecided = 0;
-  for (const record of current.values()) {
+  // Triage decision 5 (17 Jul 2026): AC 6 read literally — a current-rejected
+  // cell is NOT a completable end state; it must be superseded by a valid
+  // value (set-back) or an explicit no-result. Bare-rejected cells join the
+  // gap list (kind "rejected") so review offers the same closure route.
+  for (const [key, record] of current.entries()) {
     if (record.validity === "pending") undecided += 1;
+    if (record.validity === "rejected") {
+      const [targetType, targetId, analyteId] = key.split(":") as ["sample" | "qc", string, string];
+      const analyte = pinned.analytes.find((a) => a.id === analyteId);
+      gaps.push({
+        targetType,
+        targetId,
+        label: rowLabelFor(batch, { targetType, targetId }),
+        analyteId,
+        analyteName: analyte?.name ?? analyteId,
+        kind: "rejected",
+      });
+    }
   }
   const blockers: string[] = [];
-  if (gaps.length > 0) {
-    blockers.push(`${gaps.length} sample cell(s) without a result — fill via set-back or close as no-result + reason`);
+  const empty = gaps.filter((g) => g.kind === "empty").length;
+  const rejectedOpen = gaps.filter((g) => g.kind === "rejected").length;
+  if (empty > 0) {
+    blockers.push(`${empty} cell(s) without a result — fill via set-back or close as no-result + reason`);
+  }
+  if (rejectedOpen > 0) {
+    blockers.push(`${rejectedOpen} rejected result(s) without a superseding value or no-result — re-measure via set-back or close as no-result`);
   }
   if (undecided > 0) blockers.push(`${undecided} result(s) still awaiting a valid/rejected decision`);
   return { gaps, undecided, blockers };

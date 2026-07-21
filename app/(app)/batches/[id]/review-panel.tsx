@@ -177,7 +177,7 @@ function CloseGapDialog({
         </DialogHeader>
         <form action={submit} className="space-y-4">
           <input type="hidden" name="batchId" value={batchId} />
-          <input type="hidden" name="targetType" value="sample" />
+          <input type="hidden" name="targetType" value={gap.targetType} />
           <input type="hidden" name="targetId" value={gap.targetId} />
           <input type="hidden" name="analyteId" value={gap.analyteId} />
           <div className="space-y-2">
@@ -531,14 +531,21 @@ export function ReviewPanel({ batchId, view }: { batchId: string; view: ReviewVi
         {reviewing && view.gaps.length > 0 && (
           <div className="space-y-1 rounded border p-2">
             <p className="text-sm font-medium">
-              Gaps: {view.gaps.length} — no silent holes; each is filled via set-back (Steps tab)
-              or explicitly closed as no result + reason.
+              Open cells: {view.gaps.length} — no silent holes; each is re-measured via set-back
+              (Steps tab) or explicitly closed as no result + reason. Sample and QC cells alike; a
+              rejected value stands only once superseded.
             </p>
             {view.gaps.map((gap) => (
-              <div key={`${gap.targetId}:${gap.analyteId}`} className="flex items-center gap-2 text-sm">
+              <div
+                key={`${gap.targetType}:${gap.targetId}:${gap.analyteId}`}
+                className="flex items-center gap-2 text-sm"
+              >
                 <span className="font-mono text-xs">
                   {gap.label} × {gap.analyteName}
                 </span>
+                {gap.kind === "rejected" && (
+                  <span className="text-xs text-destructive">rejected — needs closure</span>
+                )}
                 {view.canReview && (
                   <Button size="xs" variant="outline" onClick={() => setDialog({ kind: "close-gap", gap })}>
                     Close as no result…
