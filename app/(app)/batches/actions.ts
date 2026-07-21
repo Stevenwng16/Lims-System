@@ -341,6 +341,7 @@ function parseImportConfigInput(formData: FormData): ImportConfigInput | null {
       labId: String(formData.get("labId") ?? ""),
       // Whitelisted server-side in the mock API.
       fileType: String(formData.get("fileType") ?? "csv") as "csv" | "excel",
+      sheetName: String(formData.get("sheetName") ?? ""),
       orientation: String(formData.get("orientation") ?? "wide") as "wide" | "long",
       idColumn: String(formData.get("idColumn") ?? ""),
       columns: columns.map((c) => {

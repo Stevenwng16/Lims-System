@@ -188,6 +188,21 @@ export const mockSettingsApi: SettingsApi = {
       }
       seen.add(key);
     }
+    // Triage decision 8 (17 Jul 2026): a qualifier named like a number (or
+    // starting with </>) would silently reinterpret pasted/imported numeric
+    // instrument text as a qualifier record — refuse such names outright.
+    // (Cells matching a grandfathered numeric-looking qualifier reject as
+    // ambiguous at interpretation time.)
+    if (list === "resultQualifiers") {
+      for (const name of finalNames) {
+        if (/^[<>]/.test(name) || /^-?[0-9.,]+$/.test(name)) {
+          return {
+            status: "error",
+            message: `"${name}" reads as a number (or censored value) — a qualifier with this name would hijack numeric instrument text. Pick a non-numeric name.`,
+          };
+        }
+      }
+    }
 
     // All checks passed — now apply (rename/(de)activate; never delete, AC 9).
     // Each rename/(de)activation is recorded with old → new (AC 8, pass-3

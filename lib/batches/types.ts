@@ -239,6 +239,8 @@ export type ImportConfigInput = {
   name: string;
   labId: string;
   fileType: "csv" | "excel";
+  /** Excel only: the declared sheet to read (triage decision 9). */
+  sheetName: string;
   orientation: "wide" | "long";
   idColumn: string;
   columns: ImportColumnMapping[];

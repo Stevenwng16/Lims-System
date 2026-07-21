@@ -1505,6 +1505,9 @@ export const mockBatchApi: BatchApi = {
       name: input.name.trim(),
       labId: input.labId,
       fileType: input.fileType,
+      // Excel only (triage decision 9); cleared for CSV so a type flip can
+      // never leave a stale declaration behind.
+      sheetName: input.fileType === "excel" ? input.sheetName.trim() : "",
       orientation: input.orientation,
       idColumn: input.idColumn.trim(),
       columns: input.orientation === "wide"
@@ -1914,9 +1917,11 @@ export const mockBatchApi: BatchApi = {
     if (anyReplace && !supersedeReason.trim()) {
       return { status: "error", message: "Replacing existing values requires a reason (recorded on each superseded value)." };
     }
-    if (writes.length === 0) {
-      return { status: "error", message: "Nothing to import — every cell is rejected, skipped or kept as-is." };
-    }
+    // Triage decision 12 (17 Jul 2026): an import where NOTHING applies is
+    // still a transfer attempt — the event (file, checksum, snapshot, typed
+    // skip reasons, per-row outcomes) is stored all the same, and the batch
+    // event reports "nothing applied". Full row accounting (§7.11): the
+    // attempt stays provable instead of vanishing with the preview.
 
     // AC 8: the event — file, checksum, frozen mapping, row outcomes — is
     // stored BEFORE any record is written.
@@ -1948,7 +1953,11 @@ export const mockBatchApi: BatchApi = {
       batch,
       actor,
       "import-confirmed",
-      `Import "${config.name}" — ${staged.fileName} (sha256 ${sha256.slice(0, 16)}…): ${importedCount} imported, ${supersededCount} replaced, ${rowOutcomes.filter((r) => r.outcome === "skipped").length} row(s) skipped`,
+      `Import "${config.name}" — ${staged.fileName} (sha256 ${sha256.slice(0, 16)}…): ${
+        writes.length === 0
+          ? "nothing applied (all rows rejected, skipped or kept)"
+          : `${importedCount} imported, ${supersededCount} replaced`
+      }, ${rowOutcomes.filter((r) => r.outcome === "skipped").length} row(s) skipped`,
     );
 
     // AC 9: records with origin `import`, referencing the event (per-record
@@ -2431,6 +2440,10 @@ function validateConfigInput(actor: BatchActor, input: ImportConfigInput): strin
   const lab = mockDb.labs.get(input.labId);
   if (!lab || lab.orgId !== actor.orgId) return "Choose the lab this configuration belongs to.";
   if (input.fileType !== "csv" && input.fileType !== "excel") return "Choose the file type.";
+  // Triage decision 9 (17 Jul 2026): Excel configs DECLARE the sheet to read.
+  if (input.fileType === "excel" && !input.sheetName.trim()) {
+    return "Name the sheet to read — Excel imports never trust tab order.";
+  }
   if (input.orientation !== "wide" && input.orientation !== "long") return "Choose the orientation.";
   if (input.decimalSeparator !== "comma" && input.decimalSeparator !== "point") {
     return "Declare the decimal separator (ADR-4: declared, never auto-detected).";
@@ -2507,8 +2520,34 @@ async function readImportTable(
     const ExcelJS = (await import("exceljs")).default;
     const workbook = new ExcelJS.Workbook();
     await workbook.xlsx.load(Buffer.from(bytes) as unknown as ArrayBuffer);
-    const sheet = workbook.worksheets[0];
-    if (!sheet) return { error: "The workbook contains no sheets." };
+    // Triage decision 9 (17 Jul 2026): the configuration DECLARES the sheet —
+    // tab order is never trusted (instrument exports often put a rounded
+    // Summary sheet first, and worksheets[0] may even be hidden).
+    const sheetName = config.sheetName.trim();
+    if (!sheetName) {
+      return { error: "This configuration does not declare which sheet to read — set the sheet name in the import configuration first." };
+    }
+    const sheet = workbook.worksheets.find(
+      (w) => w.name.trim().toLowerCase() === sheetName.toLowerCase(),
+    );
+    if (!sheet) {
+      return { error: `The workbook has no sheet named "${sheetName}" — the configuration declares the sheet to read.` };
+    }
+    // Triage decision 7 INTERIM (until the embedded worksheet environment):
+    // only STRING-typed cells are read. exceljs's .text on a number/date/
+    // formula cell is the stored IEEE double rendered by JS — "0.010" imports
+    // as "0.01", silently altering entered precision (never-float rule). The
+    // whole file refuses with the offending cells named, so the lab fixes the
+    // export once (save as text/CSV) instead of chasing per-cell surprises.
+    const ACCEPTED_TYPES = new Set([
+      ExcelJS.ValueType.Null,
+      ExcelJS.ValueType.Merge,
+      ExcelJS.ValueType.String,
+      ExcelJS.ValueType.Hyperlink,
+      ExcelJS.ValueType.SharedString,
+      ExcelJS.ValueType.RichText,
+    ]);
+    const badCells: string[] = [];
     // Physical sheet row kept per data row (pass-3 review fix): the stored
     // event's row numbers must point at the rows the user sees in Excel,
     // blank rows included.
@@ -2517,9 +2556,18 @@ async function readImportTable(
       const row = sheet.getRow(r);
       const cells: string[] = [];
       for (let c = 1; c <= sheet.columnCount; c++) {
-        cells.push(String(row.getCell(c).text ?? "").trim());
+        const cell = row.getCell(c);
+        if (!ACCEPTED_TYPES.has(cell.type) && badCells.length < 4) {
+          badCells.push(cell.address);
+        }
+        cells.push(String(cell.text ?? "").trim());
       }
       if (cells.some((cell) => cell !== "")) rows.push({ cells, physicalRow: r });
+    }
+    if (badCells.length > 0) {
+      return {
+        error: `Cell(s) ${badCells.slice(0, 3).join(", ")}${badCells.length > 3 ? ", …" : ""} are stored by Excel as numbers/dates/formulas — their original notation cannot be read back. Export the sheet with text-formatted cells or as CSV.`,
+      };
     }
     if (rows.length < 2) return { error: "The sheet has no data rows under the header." };
     const [header, ...data] = rows;
@@ -3058,6 +3106,15 @@ function appendRecord(
 /** Shared raw-cell interpretation for paste (AC 13) and worksheet (AC 14):
  * "<x"/">x" → censored, an active org-qualifier label → qualifier, otherwise
  * numeric under the full AC 5 rules. Text / no-result stay manual-only. */
+/** A name/cell that could ALSO be read as a number (or censored form) —
+ * shared by the qualifier-name guard (lib/settings) and the cell
+ * interpretation below (triage decision 8, 17 Jul 2026). Deliberately
+ * broad: any digits/separator combination counts, in either locale. */
+export function looksNumeric(text: string): boolean {
+  const t = text.trim();
+  return /^[<>]/.test(t) || /^-?[0-9.,]+$/.test(t);
+}
+
 function interpretRawCell(orgId: string, raw: string): ResultValueInput | { error: string } {
   const trimmed = raw.trim();
   if (!trimmed) return { error: "Empty cell." };
@@ -3071,7 +3128,18 @@ function interpretRawCell(orgId: string, raw: string): ResultValueInput | { erro
   const qualifier = getOrgSettings(orgId).resultQualifiers.find(
     (q) => q.active && q.name.trim().toLowerCase() === trimmed.toLowerCase(),
   );
-  if (qualifier) return { kind: "qualifier", qualifierId: qualifier.id };
+  if (qualifier) {
+    // Triage decision 8: a cell matching BOTH a qualifier and the numeric
+    // grammar is ambiguous — "12" must never silently become a qualifier
+    // record instead of the measured number. (New numeric-looking qualifier
+    // names are refused in Settings; this catches grandfathered ones.)
+    if (looksNumeric(trimmed)) {
+      return {
+        error: `"${trimmed}" matches the qualifier "${qualifier.name}" but also reads as a number — rename the qualifier, then re-enter.`,
+      };
+    }
+    return { kind: "qualifier", qualifierId: qualifier.id };
+  }
   return { kind: "numeric", raw: trimmed };
 }
 

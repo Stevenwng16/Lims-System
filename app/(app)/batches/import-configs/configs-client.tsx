@@ -217,6 +217,22 @@ function ConfigDialog({
                 </Select>
               </div>
             )}
+            {fileType === "excel" && (
+              <div className="space-y-2">
+                <Label htmlFor="cfg-sheet">Sheet name (declared)</Label>
+                <Input
+                  id="cfg-sheet"
+                  name="sheetName"
+                  defaultValue={source?.sheetName ?? ""}
+                  placeholder="e.g. Results"
+                  required
+                />
+                <p className="text-xs text-muted-foreground">
+                  The import reads exactly this sheet — never whatever happens to be first in tab
+                  order.
+                </p>
+              </div>
+            )}
           </div>
 
           {orientation === "wide" ? (

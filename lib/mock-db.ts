@@ -417,6 +417,9 @@ export type MockImportConfig = {
   labId: string;
   name: string;
   fileType: "csv" | "excel";
+  // Triage decision 9 (17 Jul 2026): for Excel files the sheet to read is
+  // DECLARED here — tab order is never trusted. Empty for CSV.
+  sheetName: string;
   // wide: one row per sample, one column per analyte;
   // long: one row per measurement (ID, analyte, value).
   orientation: "wide" | "long";
@@ -1847,6 +1850,7 @@ function seedDb(): MockDb {
     labId: "lab-met",
     name: "ICP-OES export (wide)",
     fileType: "csv",
+    sheetName: "", // CSV — no sheet declaration needed
     orientation: "wide",
     idColumn: "Sample",
     columns: [
@@ -1872,6 +1876,7 @@ function seedDb(): MockDb {
     labId: "lab-met",
     name: "ICP-OES export (long)",
     fileType: "csv",
+    sheetName: "",
     orientation: "long",
     idColumn: "Sample",
     columns: [],
@@ -1976,7 +1981,8 @@ function cleanDb(): MockDb {
   };
 }
 
-// V29: append-only events[] on labs, methods, QC materials and equipment
+// V30: import configs declare the Excel sheet to read (triage decision 9,
+// 17 Jul 2026). (V29: append-only events[] on labs, methods, QC materials and equipment
 // types (invariants 1+6 gap closure, 17 Jul 2026). (V28: fresh orgs start
 // with EMPTY org-specific lists; V26: org-wide jobs; V25: platformAudit —
 // the platform-level audit log of US-A2 AC 3.) The cache key carries the
@@ -1990,7 +1996,7 @@ function cleanDb(): MockDb {
 const SEED_RESET = 1;
 const CLEAN_SEED = process.env.LIMS_CLEAN_SEED === "1";
 export const mockDb: MockDb = ((globalThis as Record<string, unknown>)[
-  `__limsMockDbV29r${SEED_RESET}${CLEAN_SEED ? "Clean" : ""}`
+  `__limsMockDbV30r${SEED_RESET}${CLEAN_SEED ? "Clean" : ""}`
 ] ??= CLEAN_SEED ? cleanDb() : seedDb()) as MockDb;
 
 export function getOrgSettings(orgId: string): OrgSettings {
