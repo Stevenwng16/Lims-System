@@ -143,6 +143,29 @@ data. (Coverage gap found in the 17 Jul 2026 doc audit.)
   qualifiers (alongside the fixed `<` and `>` censored forms); no default
   entry is promised.
 
+## Decision G — triage amendments of 17 Jul 2026
+
+From the open-decision triage (all 16 review-pass items decided; see the
+decision log). Three decisions change story text:
+
+### US-B3 (equipment) — AC 2
+- **Amend** — manufacturer, model, serial number and location are OPTIONAL on
+  equipment records (only name, ID, type and lab are required): in-house-built
+  or simple equipment often has no manufacturer or serial number.
+
+### US-D4 (result entry) — AC 6 (locale display)
+- **Amend** — values display in canonical point-form for every user; the
+  locale-aware display ("12,4" for Dutch users) is dropped: a locale-formatted
+  grid invites copy/re-paste of comma values into fields governed by the
+  reject-ambiguity rule (ADR-4). Entry stays locale-aware as specified.
+
+### US-D4 AC 5 / US-D6 AC 6 (rejected end-state)
+- **Clarify** — AC 6's reading governs completion: a current-rejected cell
+  blocks batch completion until it is superseded by a valid value or an
+  explicit no-result (review offers that closure route). AC 5's "stands as
+  rejected-with-reason" describes the RECORD (the rejection with its reason
+  is permanent history), not a completable end state.
+
 ## Changelog lines (for the Notion changelog)
 
 - 13 Jul 2026 — Jobs made organisation-wide (one order = one number; methods
@@ -165,3 +188,10 @@ data. (Coverage gap found in the 17 Jul 2026 doc audit.)
 - 13 Jul 2026 — US-A7 AC 9c and US-D4 AC 3 amended: the result-qualifier
   list starts empty at provisioning, no "n.b." default. (Completes the
   empty-lists decision; coverage gap closed 17 Jul 2026.)
+- 17 Jul 2026 — Triage amendments: US-B3 AC 2 equipment detail fields
+  optional; US-D4 AC 6 locale display dropped (canonical point-form);
+  US-D4 AC 5 / US-D6 AC 6 rejected-cell completion reading clarified.
+  Decided by Ramazan.
+- 17 Jul 2026 — NEW STORY to add: embedded worksheet environment (ADR-4
+  phase 2 pulled forward; draft in docs/story-draft-embedded-worksheet.md);
+  will amend US-B1 AC 6 and US-D4 AC 9/14 when frozen.

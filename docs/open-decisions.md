@@ -1,4 +1,11 @@
-# Open decisions for Ramazan — triage list (17 Jul 2026)
+# Open decisions — DECIDED 17 Jul 2026
+
+**All 16 items were triaged by Ramazan on 17 Jul 2026 — the recommended
+option was chosen on every item** (for #7 additionally: data entry moves to an
+embedded in-app worksheet, see docs/story-draft-embedded-worksheet.md; the
+string-cells-only rule is the interim). One consolidated decision-log entry
+records all 16. Items 4, 10 and 16 are log/amendment-only; the rest are being
+built (see git history of 17 Jul 2026).
 
 The 16 design decisions parked during review passes 2–4, one line each for triage in one
 sitting. Headlines are verbatim from `docs/review-progress.md`, which holds the full options
