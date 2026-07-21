@@ -103,6 +103,21 @@ function dueDateError(raw: string): string | null {
   return null;
 }
 
+/** The open/awaiting-review batch a sample sits in, if any. Triage decision 3
+ * (17 Jul 2026): voiding is refused while a batch treats the sample as a live
+ * member — otherwise results stay enterable and completion counts a sample
+ * the job page calls Voided. The sanctioned mid-run exits are: remove from
+ * composition while unlatched, record an explicit no-result (US-D1 AC 10),
+ * or void the batch. Mirrors the acceptance freeze. */
+function unfinishedBatchContaining(orgId: string, sampleId: string) {
+  for (const batch of mockDb.batches.values()) {
+    if (batch.orgId !== orgId) continue;
+    if (batch.status !== "open" && batch.status !== "awaiting-review") continue;
+    if (batch.sampleIds.includes(sampleId)) return batch;
+  }
+  return null;
+}
+
 /** Append one audit event to the job (US-C3 AC 5 / invariant 1 — pass-4
  * review fix: job edits previously left NO trace anywhere; the History tab
  * reconstructed "illustrative" lines from current state, so before-values
@@ -643,6 +658,18 @@ export const mockJobApi: JobApi = {
     const { job } = loaded;
     if (job.voided) return { status: "error", message: "This job is already voided." };
     if (!reason.trim()) return { status: "error", message: "A reason is required to void a job." };
+    // Triage decision 3 (17 Jul 2026): no live sample may sit in an
+    // unfinished batch — finish, void or exit the batch work first.
+    for (const sample of job.samples) {
+      if (sample.voided) continue;
+      const batch = unfinishedBatchContaining(actor.orgId, sample.id);
+      if (batch) {
+        return {
+          status: "error",
+          message: `Sample ${sample.id} is in unfinished batch ${batch.id}. Remove it from the composition (while unlatched), record a no-result, or void the batch before voiding this job.`,
+        };
+      }
+    }
     // Void, never delete (AC 13) — the record and its IDs are retained.
     job.voided = true;
     job.voidReason = reason.trim();
@@ -659,6 +686,14 @@ export const mockJobApi: JobApi = {
     // (audit finding 15).
     if (!sample || sample.voided) return { status: "error", message: "Unknown sample." };
     if (!reason.trim()) return { status: "error", message: "A reason is required to void a sample." };
+    // Triage decision 3 (17 Jul 2026): see unfinishedBatchContaining.
+    const unfinished = unfinishedBatchContaining(actor.orgId, sampleId);
+    if (unfinished) {
+      return {
+        status: "error",
+        message: `This sample is in unfinished batch ${unfinished.id}. Remove it from the composition (while unlatched), record a no-result, or void the batch first.`,
+      };
+    }
     if (job.samples.filter((s) => !s.voided).length <= 1) {
       // A job keeps at least one live sample (AC 14: a job has at least one).
       return { status: "error", message: "A job must keep at least one sample — void the whole job instead." };
